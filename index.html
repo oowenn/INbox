@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Inbox viewer (Gmail API)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 52rem;
+        margin: 1rem auto;
+        padding: 0 1rem;
+        line-height: 1.45;
+      }
+      #toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      #viewer {
+        display: none;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 1rem;
+        background: #fafafa;
+      }
+      #meta {
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+      }
+      #meta strong {
+        display: block;
+        font-size: 1.1rem;
+        margin-bottom: 0.35rem;
+      }
+      #body {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 60vh;
+        overflow: auto;
+        background: #fff;
+        border: 1px solid #e0e0e0;
+        padding: 0.75rem;
+        border-radius: 4px;
+      }
+      #nav {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        margin-top: 1rem;
+      }
+      #position {
+        color: #555;
+        font-size: 0.9rem;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Inbox viewer</h1>
+    <p>Most recent message first. Only plain/HTML body text is shown — attachments are not loaded or displayed.</p>
+
+    <div id="toolbar">
+      <button id="authorize_button" type="button" onclick="handleAuthClick()">Authorize</button>
+      <button id="signout_button" type="button" onclick="handleSignoutClick()" style="visibility: hidden">Sign Out</button>
+    </div>
+
+    <div id="viewer">
+      <div id="meta"></div>
+      <div id="body"></div>
+      <div id="nav">
+        <button id="prev_btn" type="button" onclick="prevMessage()">Back</button>
+        <button id="next_btn" type="button" onclick="nextMessage()">Next</button>
+        <span id="position"></span>
+      </div>
+    </div>
+
+    <pre id="status" style="white-space: pre-wrap; color: #c00"></pre>
+
+    <script src="config.local.js" onerror="window.__GMAIL_CONFIG_ERROR__='missing'"></script>
+    <script>
+      const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest';
+      const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly';
+      const INBOX_QUERY = 'in:inbox';
+      const LIST_MAX = 100;
+
+      const cfg = window.GMAIL_WEB_CONFIG;
+      const CLIENT_ID = (cfg && cfg.clientId) || '';
+      const API_KEY = (cfg && cfg.apiKey) || '';
+
+      let tokenClient;
+      let gapiInited = false;
+      let gisInited = false;
+
+      /** @type {string[]} */
+      let messageIds = [];
+      let currentIndex = 0;
+
+      document.getElementById('authorize_button').style.visibility = 'hidden';
+
+      function isWebConfigValid() {
+        if (window.__GMAIL_CONFIG_ERROR__ === 'missing') return false;
+        if (!CLIENT_ID || !API_KEY) return false;
+        if (CLIENT_ID.includes('YOUR_') || API_KEY.includes('YOUR_')) return false;
+        return true;
+      }
+
+      function showWebConfigHint() {
+        if (window.__GMAIL_CONFIG_ERROR__ === 'missing') {
+          setStatus(
+            'Missing config.local.js — copy config.example.js to config.local.js and set clientId and apiKey. See README.',
+            true
+          );
+          return;
+        }
+        setStatus(
+          'Invalid web config — edit config.local.js with your OAuth Web client ID and browser API key (not placeholders). See README.',
+          true
+        );
+      }
+
+      function gapiLoaded() {
+        if (!isWebConfigValid()) {
+          showWebConfigHint();
+          return;
+        }
+        gapi.load('client', initializeGapiClient);
+      }
+
+      async function initializeGapiClient() {
+        await gapi.client.init({
+          apiKey: API_KEY,
+          discoveryDocs: [DISCOVERY_DOC],
+        });
+        gapiInited = true;
+        maybeEnableButtons();
+      }
+
+      function gisLoaded() {
+        if (!isWebConfigValid()) {
+          showWebConfigHint();
+          return;
+        }
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPES,
+          callback: '',
+        });
+        gisInited = true;
+        maybeEnableButtons();
+      }
+
+      function maybeEnableButtons() {
+        if (!isWebConfigValid()) return;
+        if (gapiInited && gisInited) {
+          document.getElementById('authorize_button').style.visibility = 'visible';
+        }
+      }
+
+      function setStatus(msg, isError) {
+        const el = document.getElementById('status');
+        el.textContent = msg || '';
+        el.style.color = isError ? '#c00' : '#333';
+      }
+
+      function handleAuthClick() {
+        tokenClient.callback = async (resp) => {
+          if (resp.error !== undefined) {
+            setStatus(String(resp.error), true);
+            throw resp;
+          }
+          gapi.client.setToken({ access_token: resp.access_token });
+          document.getElementById('signout_button').style.visibility = 'visible';
+          document.getElementById('authorize_button').textContent = 'Refresh token';
+          setStatus('');
+          await loadInbox();
+        };
+
+        if (gapi.client.getToken() === null) {
+          tokenClient.requestAccessToken({ prompt: 'consent' });
+        } else {
+          tokenClient.requestAccessToken({ prompt: '' });
+        }
+      }
+
+      function handleSignoutClick() {
+        const token = gapi.client.getToken();
+        if (token !== null) {
+          google.accounts.oauth2.revoke(token.access_token);
+          gapi.client.setToken('');
+        }
+        messageIds = [];
+        currentIndex = 0;
+        document.getElementById('viewer').style.display = 'none';
+        document.getElementById('body').textContent = '';
+        document.getElementById('meta').innerHTML = '';
+        document.getElementById('authorize_button').textContent = 'Authorize';
+        document.getElementById('signout_button').style.visibility = 'hidden';
+        setStatus('');
+      }
+
+      /**
+       * Gmail body.data is base64url. Never calls attachments API.
+       */
+      function decodeBodyData(data) {
+        if (!data) return '';
+        const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new TextDecoder('utf-8').decode(bytes);
+      }
+
+      function headerMap(headers) {
+        const m = {};
+        (headers || []).forEach((h) => {
+          const name = (h.name || '').toLowerCase();
+          if (name) m[name] = h.value || '';
+        });
+        return m;
+      }
+
+      /**
+       * True if this part should be ignored (attachment / non-text binary), not fetched.
+       */
+      function isSkippedAttachmentPart(part) {
+        if (!part) return true;
+        const mime = (part.mimeType || '').toLowerCase();
+        const fn = part.filename || '';
+        const hasAtt = !!part.body?.attachmentId;
+        if (mime.startsWith('multipart/')) return false;
+        if (mime.startsWith('text/plain') || mime.startsWith('text/html')) {
+          if (fn && hasAtt) return true;
+          return false;
+        }
+        if (hasAtt || fn) return true;
+        if (mime.startsWith('image/') || mime.startsWith('audio/') || mime.startsWith('video/')) return true;
+        if (mime.startsWith('application/')) return true;
+        return false;
+      }
+
+      /**
+       * Collect text/plain and text/html from payload only (no attachment downloads).
+       */
+      function extractBodiesFromPart(part, acc) {
+        if (!part) return;
+        const mime = (part.mimeType || '').toLowerCase();
+
+        if (mime.startsWith('multipart/')) {
+          (part.parts || []).forEach((p) => extractBodiesFromPart(p, acc));
+          return;
+        }
+
+        if (isSkippedAttachmentPart(part)) return;
+
+        if (mime === 'text/plain' && part.body?.data) {
+          acc.plain = decodeBodyData(part.body.data);
+        } else if (mime === 'text/html' && part.body?.data) {
+          acc.htmlRaw = decodeBodyData(part.body.data);
+        }
+      }
+
+      function htmlToPlainText(html) {
+        try {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          return doc.body.textContent || '';
+        } catch {
+          return html;
+        }
+      }
+
+      function bodyTextFromPayload(payload) {
+        const acc = { plain: '', htmlRaw: '' };
+        if (payload?.body?.data && (payload.mimeType || '').toLowerCase() === 'text/plain') {
+          acc.plain = decodeBodyData(payload.body.data);
+        } else if (payload?.body?.data && (payload.mimeType || '').toLowerCase() === 'text/html') {
+          acc.htmlRaw = decodeBodyData(payload.body.data);
+        } else {
+          extractBodiesFromPart(payload, acc);
+        }
+        if (acc.plain) return acc.plain.trimEnd();
+        if (acc.htmlRaw) return htmlToPlainText(acc.htmlRaw).trimEnd();
+        return '(No text body in this message. Attachments are not shown.)';
+      }
+
+      async function loadInbox() {
+        setStatus('Loading inbox…');
+        let response;
+        try {
+          response = await gapi.client.gmail.users.messages.list({
+            userId: 'me',
+            q: INBOX_QUERY,
+            maxResults: LIST_MAX,
+          });
+        } catch (err) {
+          setStatus(err.message || String(err), true);
+          return;
+        }
+
+        const list = response.result.messages || [];
+        messageIds = list.map((m) => m.id).filter(Boolean);
+        if (messageIds.length === 0) {
+          document.getElementById('viewer').style.display = 'none';
+          setStatus('No messages in inbox (for this query).');
+          return;
+        }
+
+        currentIndex = 0;
+        document.getElementById('viewer').style.display = 'block';
+        await showMessageAtIndex(currentIndex);
+        setStatus('');
+      }
+
+      async function showMessageAtIndex(index) {
+        if (index < 0 || index >= messageIds.length) return;
+        currentIndex = index;
+        const id = messageIds[currentIndex];
+
+        setStatus('Loading message…');
+        let response;
+        try {
+          response = await gapi.client.gmail.users.messages.get({
+            userId: 'me',
+            id: id,
+            format: 'full',
+          });
+        } catch (err) {
+          setStatus(err.message || String(err), true);
+          return;
+        }
+
+        const msg = response.result;
+        const headers = headerMap(msg.payload?.headers);
+        const subject = headers['subject'] || '(no subject)';
+        const from = headers['from'] || '';
+        const date = headers['date'] || '';
+        const bodyText = bodyTextFromPayload(msg.payload);
+
+        document.getElementById('meta').innerHTML =
+          '<strong>' +
+          escapeHtml(subject) +
+          '</strong>' +
+          '<div>From: ' +
+          escapeHtml(from) +
+          '</div>' +
+          '<div>Date: ' +
+          escapeHtml(date) +
+          '</div>';
+
+        document.getElementById('body').textContent = bodyText;
+
+        const pos = document.getElementById('position');
+        pos.textContent = `${currentIndex + 1} / ${messageIds.length}`;
+
+        document.getElementById('prev_btn').disabled = currentIndex === 0;
+        document.getElementById('next_btn').disabled = currentIndex === messageIds.length - 1;
+
+        setStatus('');
+      }
+
+      function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      async function prevMessage() {
+        if (currentIndex <= 0) return;
+        await showMessageAtIndex(currentIndex - 1);
+      }
+
+      async function nextMessage() {
+        if (currentIndex >= messageIds.length - 1) return;
+        await showMessageAtIndex(currentIndex + 1);
+      }
+    </script>
+    <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+    <script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
+  </body>
+</html>

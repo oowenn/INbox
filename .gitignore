@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Gmail OAuth (never commit)
+credentials.json
+token.json
+.env
+
+# Web demo: local secrets (copy from config.example.js)
+config.local.js
+
+# IDE
+.idea/
+.vscode/
