@@ -1,84 +1,92 @@
 # INbox
 
-Personal PoC for an email-driven job application pipeline. See [DESIGN.md](DESIGN.md) for phases and architecture.
+Personal PoC for an email-driven job application tracker. This README assumes you run everything with **Docker Compose**.
 
-## Repository layout
+The app loop:
 
-| Path | Role |
-|------|------|
-| `src/jobinbox/config.py` | Settings from env (paths, limits, Gmail query) |
-| `src/jobinbox/ingestion/` | Provider adapters (Gmail now; IMAP/API later) |
-| `src/jobinbox/cli.py` | CLI: `python -m jobinbox fetch` |
-| `index.html` | Browser inbox viewer (Gmail JS client) |
-| `config.example.js` | Template for web credentials — copy to `config.local.js` (gitignored) |
+1. Backend fetches up to 200 Gmail messages (newest first; attachment bodies are not used).
+2. Frontend steps through them with Back/Next.
+3. Backend calls **Ollama on your host** and returns JSON per email: `application` (`yes`/`no`), `company`, `role`, `stage`.
 
-Secrets never belong in git: use `credentials.json` / `token.json` for Python, `config.local.js` for the web demo.
+See [DESIGN.md](DESIGN.md) for roadmap and architecture.
 
----
+## Prerequisites
 
-## Python CLI (Gmail API)
+- **Docker** and **Docker Compose**
+- **LLM backend (pick one):**
+  - **Ollama** on the host (default `http://127.0.0.1:11434`), with a model pulled. **`JOBINBOX_OLLAMA_MODEL`** defaults to **`llama3.1:8b`** in code; smaller models (e.g. `llama3.2:3b`) are faster but easier to confuse on edge cases. For heavier accuracy, try `qwen2.5:14b` or `llama3.1:70b` after `ollama pull …`.
+  - **OpenAI** (optional): set **`JOBINBOX_LLM_PROVIDER=openai`** and **`JOBINBOX_OPENAI_API_KEY`** or **`OPENAI_API_KEY`**. The container needs outbound HTTPS to `api.openai.com` (or your **`JOBINBOX_OPENAI_BASE_URL`**). Default model **`gpt-4o-mini`**; override with **`JOBINBOX_OPENAI_MODEL`**.
+- A **Google Cloud** project with **Gmail API** enabled and OAuth consent configured (Testing + your account as a **Test user** is enough for personal use)
 
-Uses an OAuth client of type **Desktop app** and `credentials.json` at the repo root (or `JOBINBOX_CREDENTIALS`).
+## Files in the repo root (host)
 
-1. [Google Cloud Console](https://console.cloud.google.com/) → your project → **APIs & Services** → enable **Gmail API**.
-2. **Credentials** → **Create credentials** → **OAuth client ID** → application type **Desktop app** → download JSON.
-3. Save as `credentials.json` in this directory (gitignored), or set `JOBINBOX_CREDENTIALS` to its path.
+The compose file bind-mounts this directory to **`/app/host`** in the container. Put secrets here (all gitignored):
 
-```bash
-cd INbox   # or your clone root containing pyproject.toml
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .
-python -m jobinbox fetch --pretty --limit 10
-```
+| File | Required | Purpose |
+|------|----------|---------|
+| **`desktop_credentials.json`** | **Yes** | **Desktop app** OAuth client JSON — used for Gmail in the container. |
+| **`webapp_credentials.json`** | No | Web client JSON; not used for Gmail here. Optional (e.g. future browser demos). `GET /api/health` reports if it exists. |
+| **`token.json`** | Created after first OAuth | Saved on the host after you complete sign-in once. |
 
-First run opens a browser to sign in; `token.json` is written (gitignored). Optional env vars: see `env.example` and `jobinbox.config.Settings`.
+## Google Cloud: OAuth clients
 
----
+1. [Google Cloud Console](https://console.cloud.google.com/) → enable **Gmail API**.
+2. **Credentials** → **OAuth client ID** → type **Desktop app** → download JSON → save as **`desktop_credentials.json`** in this directory.
+3. (Optional) Create a **Web application** client → save as **`webapp_credentials.json`** if you want it on disk for later; this stack does not use it for Gmail.
 
-## Web inbox viewer (`index.html`)
+If Google shows **`redirect_uri_mismatch`** during the steps below, use a **Desktop** client for `desktop_credentials.json`, or register **`http://localhost:8090/`** (and optionally `http://127.0.0.1:8090/`) on a Web client.
 
-Uses the **browser** OAuth flow — you need a **separate** OAuth client of type **Web application** (not the Desktop client used by Python). Same GCP project is fine.
-
-### Google Cloud setup (web)
-
-1. **Gmail API** enabled (same as above).
-2. **Credentials** → **OAuth client ID** → **Web application**.
-3. **Authorized JavaScript origins** (must match how you open the page), e.g.  
-   `http://127.0.0.1:8080` and `http://localhost:8080`.
-4. **Authorized redirect URIs** — add the same origins (and optionally `http://127.0.0.1:8080/` with a trailing slash if Google still complains).
-5. **OAuth consent screen**: while status is **Testing**, add your Google account under **Test users**.
-6. Create an **API key** (same project). Restrict it (e.g. HTTP referrers for `http://127.0.0.1:8080/*`) before any public deployment.
-
-### Local config
+## Commands (from this directory)
 
 ```bash
-cp config.example.js config.local.js
-# Edit config.local.js: set clientId (Web client) and apiKey
+# 1) Build (use --no-cache after pulling code changes)
+docker compose build --no-cache app
+
+# 2) First-time Gmail OAuth — publishes port 8090 for the callback
+docker compose run --rm --service-ports app python -m jobinbox fetch --limit 1 --pretty
+# Open the printed URL, sign in; token.json appears in this directory.
+
+# 3) Run API + UI
+docker compose up --build
 ```
 
-Never commit `config.local.js`.
+Open **http://127.0.0.1:8000**.
 
-### Serve over HTTP
+- Click **Load emails** (default query `in:inbox`, up to 200).
+- Use **Back** / **Next** and inspect **LLM output** for each message.
 
-Do not open `index.html` as a `file://` URL; use a local origin so OAuth matches your Console settings.
+### Optional: shell or one-off commands in the container
 
 ```bash
-python3 -m http.server 8080
+docker compose run --rm app python -m jobinbox fetch --pretty --limit 10
 ```
 
-Open `http://127.0.0.1:8080/index.html` (or the same host/port you registered).
+(Requires existing **`token.json`**. For OAuth again, add **`--service-ports`** as in step 2.)
 
----
+### Health check
 
-## Pushing to GitHub
+```bash
+curl -s http://127.0.0.1:8000/api/health
+```
 
-- Confirm **no secrets** are tracked: `credentials.json`, `token.json`, `config.local.js`, `.env` should only exist locally (see `.gitignore`).
-- If OAuth client IDs or API keys were ever committed or shared, **rotate** them in Google Cloud Console and use the new values only in local files.
-- Optional: add a GitHub repo description pointing to `DESIGN.md` for roadmap context.
+## Environment variables
 
----
+Override in `docker-compose.yml`, a `.env` file beside it, or `export` before `docker compose up`. Defaults are also documented in `env.example` and `src/jobinbox/config.py`.
 
-## Environment (Python)
-
-Copy `env.example` to `.env` and load it with your shell if you use non-default paths; variables are optional — see `jobinbox.config.Settings`.
+| Variable | Role |
+|----------|------|
+| `JOBINBOX_PROJECT_ROOT` | Set in image to `/app/host` (bind mount). |
+| `JOBINBOX_DESKTOP_CREDENTIALS` | Default in compose: `/app/host/desktop_credentials.json` |
+| `JOBINBOX_WEBAPP_CREDENTIALS` | Default: `/app/host/webapp_credentials.json` |
+| `JOBINBOX_TOKEN` | Default: `/app/host/token.json` |
+| `JOBINBOX_OLLAMA_BASE_URL` | Default: `http://host.docker.internal:11434` |
+| `JOBINBOX_OLLAMA_MODEL` | Default: `llama3.1:8b` (see Prerequisites for larger alternatives) |
+| `JOBINBOX_OLLAMA_TIMEOUT_S` | Default: `180` (HTTP **read** timeout for `/api/chat`; connect stays 30s) |
+| `JOBINBOX_LLM_PROVIDER` | `ollama` (default) or `openai` |
+| `JOBINBOX_OPENAI_API_KEY` / `OPENAI_API_KEY` | OpenAI secret when provider is `openai` |
+| `JOBINBOX_OPENAI_MODEL` | Default: `gpt-4o-mini` |
+| `JOBINBOX_OPENAI_BASE_URL` | Default: `https://api.openai.com/v1` (compatible Chat Completions API) |
+| `JOBINBOX_OPENAI_JSON_MODE` | Default: `1` — sends `response_format: json_object`; set `0` if your endpoint rejects it |
+| `JOBINBOX_OAUTH_MODE` | Compose default: `manual` (print auth URL; no browser inside container) |
+| `JOBINBOX_OAUTH_PORT` | Default: `8090` (stable redirect URI) |
+| `JOBINBOX_OAUTH_BIND_ADDR` | Compose sets `0.0.0.0` so the callback is reachable through the published port |

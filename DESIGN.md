@@ -97,7 +97,7 @@ Validate that email parsing → structured application tracking is feasible and 
 
 ### Success Criteria
 - Can correctly identify job-related emails
-- Can extract company + stage with reasonable accuracy
+- Can extract company, role, and stage with reasonable accuracy
 - Can group into applications
 
 ---

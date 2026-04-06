@@ -8,11 +8,12 @@ dist/
 build/
 
 # Gmail OAuth (never commit)
-credentials.json
+desktop_credentials.json
+webapp_credentials.json
 token.json
 .env
 
-# Web demo: local secrets (copy from config.example.js)
+# Legacy browser-demo local secrets (keep untracked if present)
 config.local.js
 
 # IDE

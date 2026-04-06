@@ -2,383 +2,301 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Inbox viewer (Gmail API)</title>
+    <title>INbox PoC - Gmail + LLM</title>
     <style>
       body {
         font-family: system-ui, sans-serif;
-        max-width: 52rem;
-        margin: 1rem auto;
+        max-width: 64rem;
+        margin: 1rem auto 3rem;
         padding: 0 1rem;
         line-height: 1.45;
       }
-      #toolbar {
-        display: flex;
-        flex-wrap: wrap;
+      h1 {
+        margin-bottom: 0.4rem;
+      }
+      .subtle {
+        color: #555;
+      }
+      #controls {
+        display: grid;
+        grid-template-columns: 8rem 1fr auto;
         gap: 0.5rem;
         align-items: center;
-        margin-bottom: 1rem;
+        margin: 1rem 0;
+      }
+      #controls input {
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0.45rem 0.6rem;
+      }
+      button {
+        border: 1px solid #999;
+        background: #f3f3f3;
+        border-radius: 6px;
+        padding: 0.45rem 0.75rem;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      #status {
+        min-height: 1.25rem;
+        color: #444;
+        margin-bottom: 0.75rem;
+      }
+      #status.error {
+        color: #b00020;
       }
       #viewer {
         display: none;
-        border: 1px solid #ccc;
+        border: 1px solid #d0d0d0;
         border-radius: 8px;
         padding: 1rem;
         background: #fafafa;
       }
       #meta {
-        margin-bottom: 1rem;
-        font-size: 0.9rem;
+        margin-bottom: 0.8rem;
       }
       #meta strong {
-        display: block;
         font-size: 1.1rem;
-        margin-bottom: 0.35rem;
+        display: block;
+        margin-bottom: 0.2rem;
       }
-      #body {
+      #email_body {
         white-space: pre-wrap;
         word-break: break-word;
-        max-height: 60vh;
+        max-height: 42vh;
         overflow: auto;
         background: #fff;
         border: 1px solid #e0e0e0;
+        border-radius: 6px;
         padding: 0.75rem;
-        border-radius: 4px;
       }
       #nav {
         display: flex;
         gap: 0.5rem;
         align-items: center;
-        margin-top: 1rem;
+        margin-top: 0.75rem;
       }
       #position {
         color: #555;
-        font-size: 0.9rem;
       }
-      button:disabled {
-        opacity: 0.45;
-        cursor: not-allowed;
+      .card {
+        margin-top: 1rem;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        background: #fff;
+        padding: 0.75rem;
+      }
+      .card h2 {
+        margin: 0 0 0.45rem 0;
+        font-size: 1rem;
+      }
+      #llm_state {
+        color: #555;
+        margin-bottom: 0.4rem;
+      }
+      #llm_json {
+        margin: 0;
+        background: #f5f5f5;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        padding: 0.65rem;
+        max-height: 22vh;
+        overflow: auto;
+      }
+      @media (max-width: 700px) {
+        #controls {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Inbox viewer</h1>
-    <p>Most recent message first. Only plain/HTML body text is shown — attachments are not loaded or displayed.</p>
+    <h1>INbox PoC</h1>
+    <p class="subtle">
+      Browse the most recent emails (up to 200) and view LLM extraction output:
+      <code>{ application, company, role, stage }</code>.
+    </p>
 
-    <div id="toolbar">
-      <button id="authorize_button" type="button" onclick="handleAuthClick()">Authorize</button>
-      <button id="signout_button" type="button" onclick="handleSignoutClick()" style="visibility: hidden">Sign Out</button>
+    <div id="controls">
+      <input id="limit_input" type="number" min="1" max="200" value="200" />
+      <input id="query_input" type="text" value="in:inbox" />
+      <button id="load_btn" type="button">Load emails</button>
     </div>
+
+    <div id="status"></div>
 
     <div id="viewer">
       <div id="meta"></div>
-      <div id="body"></div>
+      <div id="email_body"></div>
+
       <div id="nav">
-        <button id="prev_btn" type="button" onclick="prevMessage()">Back</button>
-        <button id="next_btn" type="button" onclick="nextMessage()">Next</button>
+        <button id="back_btn" type="button">Back</button>
+        <button id="next_btn" type="button">Next</button>
         <span id="position"></span>
+      </div>
+
+      <div class="card">
+        <h2>LLM output</h2>
+        <div id="llm_state"></div>
+        <pre id="llm_json"></pre>
+        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem">
+          <button id="classify_btn" type="button">Classify with LLM</button>
+          <button id="reanalyze_btn" type="button">Re-run LLM (ignore cache)</button>
+        </div>
       </div>
     </div>
 
-    <pre id="status" style="white-space: pre-wrap; color: #c00"></pre>
-
-    <script src="config.local.js" onerror="window.__GMAIL_CONFIG_ERROR__='missing'"></script>
     <script>
-      const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest';
-      const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly';
-      const INBOX_QUERY = 'in:inbox';
-      const LIST_MAX = 100;
+      const state = {
+        messages: [],
+        currentIndex: 0,
+        analysisById: new Map(),
+      };
 
-      const cfg = window.GMAIL_WEB_CONFIG;
-      const CLIENT_ID = (cfg && cfg.clientId) || '';
-      const API_KEY = (cfg && cfg.apiKey) || '';
+      const $ = (id) => document.getElementById(id);
 
-      let tokenClient;
-      let gapiInited = false;
-      let gisInited = false;
+      $('load_btn').addEventListener('click', loadMessages);
+      $('back_btn').addEventListener('click', () => navigate(-1));
+      $('next_btn').addEventListener('click', () => navigate(1));
+      $('classify_btn').addEventListener('click', () => analyzeCurrent(false));
+      $('reanalyze_btn').addEventListener('click', () => analyzeCurrent(true));
 
-      /** @type {string[]} */
-      let messageIds = [];
-      let currentIndex = 0;
-
-      document.getElementById('authorize_button').style.visibility = 'hidden';
-
-      function isWebConfigValid() {
-        if (window.__GMAIL_CONFIG_ERROR__ === 'missing') return false;
-        if (!CLIENT_ID || !API_KEY) return false;
-        if (CLIENT_ID.includes('YOUR_') || API_KEY.includes('YOUR_')) return false;
-        return true;
+      function setStatus(text, isError) {
+        const el = $('status');
+        el.textContent = text || '';
+        el.className = isError ? 'error' : '';
       }
 
-      function showWebConfigHint() {
-        if (window.__GMAIL_CONFIG_ERROR__ === 'missing') {
-          setStatus(
-            'Missing config.local.js — copy config.example.js to config.local.js and set clientId and apiKey. See README.',
-            true
-          );
-          return;
-        }
-        setStatus(
-          'Invalid web config — edit config.local.js with your OAuth Web client ID and browser API key (not placeholders). See README.',
-          true
-        );
+      function clampLimit(value) {
+        const parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return 200;
+        return Math.max(1, Math.min(200, parsed));
       }
 
-      function gapiLoaded() {
-        if (!isWebConfigValid()) {
-          showWebConfigHint();
-          return;
-        }
-        gapi.load('client', initializeGapiClient);
+      function currentMessage() {
+        return state.messages[state.currentIndex] || null;
       }
 
-      async function initializeGapiClient() {
-        await gapi.client.init({
-          apiKey: API_KEY,
-          discoveryDocs: [DISCOVERY_DOC],
-        });
-        gapiInited = true;
-        maybeEnableButtons();
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text || '';
+        return div.innerHTML;
       }
 
-      function gisLoaded() {
-        if (!isWebConfigValid()) {
-          showWebConfigHint();
-          return;
-        }
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: CLIENT_ID,
-          scope: SCOPES,
-          callback: '',
-        });
-        gisInited = true;
-        maybeEnableButtons();
-      }
+      async function loadMessages() {
+        const limit = clampLimit($('limit_input').value);
+        $('limit_input').value = String(limit);
+        const query = $('query_input').value || 'in:inbox';
 
-      function maybeEnableButtons() {
-        if (!isWebConfigValid()) return;
-        if (gapiInited && gisInited) {
-          document.getElementById('authorize_button').style.visibility = 'visible';
-        }
-      }
+        setStatus('Loading inbox from backend...');
+        $('viewer').style.display = 'none';
+        state.analysisById.clear();
 
-      function setStatus(msg, isError) {
-        const el = document.getElementById('status');
-        el.textContent = msg || '';
-        el.style.color = isError ? '#c00' : '#333';
-      }
-
-      function handleAuthClick() {
-        tokenClient.callback = async (resp) => {
-          if (resp.error !== undefined) {
-            setStatus(String(resp.error), true);
-            throw resp;
+        try {
+          const url = `/api/messages?limit=${limit}&query=${encodeURIComponent(query)}`;
+          const resp = await fetch(url);
+          const payload = await resp.json();
+          if (!resp.ok) {
+            throw new Error(payload.detail || 'Failed to load messages');
           }
-          gapi.client.setToken({ access_token: resp.access_token });
-          document.getElementById('signout_button').style.visibility = 'visible';
-          document.getElementById('authorize_button').textContent = 'Refresh token';
-          setStatus('');
-          await loadInbox();
-        };
 
-        if (gapi.client.getToken() === null) {
-          tokenClient.requestAccessToken({ prompt: 'consent' });
-        } else {
-          tokenClient.requestAccessToken({ prompt: '' });
-        }
-      }
+          state.messages = payload.messages || [];
+          state.currentIndex = 0;
 
-      function handleSignoutClick() {
-        const token = gapi.client.getToken();
-        if (token !== null) {
-          google.accounts.oauth2.revoke(token.access_token);
-          gapi.client.setToken('');
-        }
-        messageIds = [];
-        currentIndex = 0;
-        document.getElementById('viewer').style.display = 'none';
-        document.getElementById('body').textContent = '';
-        document.getElementById('meta').innerHTML = '';
-        document.getElementById('authorize_button').textContent = 'Authorize';
-        document.getElementById('signout_button').style.visibility = 'hidden';
-        setStatus('');
-      }
+          if (state.messages.length === 0) {
+            setStatus('No messages returned for that query.');
+            return;
+          }
 
-      /**
-       * Gmail body.data is base64url. Never calls attachments API.
-       */
-      function decodeBodyData(data) {
-        if (!data) return '';
-        const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
-        const binary = atob(b64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return new TextDecoder('utf-8').decode(bytes);
-      }
-
-      function headerMap(headers) {
-        const m = {};
-        (headers || []).forEach((h) => {
-          const name = (h.name || '').toLowerCase();
-          if (name) m[name] = h.value || '';
-        });
-        return m;
-      }
-
-      /**
-       * True if this part should be ignored (attachment / non-text binary), not fetched.
-       */
-      function isSkippedAttachmentPart(part) {
-        if (!part) return true;
-        const mime = (part.mimeType || '').toLowerCase();
-        const fn = part.filename || '';
-        const hasAtt = !!part.body?.attachmentId;
-        if (mime.startsWith('multipart/')) return false;
-        if (mime.startsWith('text/plain') || mime.startsWith('text/html')) {
-          if (fn && hasAtt) return true;
-          return false;
-        }
-        if (hasAtt || fn) return true;
-        if (mime.startsWith('image/') || mime.startsWith('audio/') || mime.startsWith('video/')) return true;
-        if (mime.startsWith('application/')) return true;
-        return false;
-      }
-
-      /**
-       * Collect text/plain and text/html from payload only (no attachment downloads).
-       */
-      function extractBodiesFromPart(part, acc) {
-        if (!part) return;
-        const mime = (part.mimeType || '').toLowerCase();
-
-        if (mime.startsWith('multipart/')) {
-          (part.parts || []).forEach((p) => extractBodiesFromPart(p, acc));
-          return;
-        }
-
-        if (isSkippedAttachmentPart(part)) return;
-
-        if (mime === 'text/plain' && part.body?.data) {
-          acc.plain = decodeBodyData(part.body.data);
-        } else if (mime === 'text/html' && part.body?.data) {
-          acc.htmlRaw = decodeBodyData(part.body.data);
-        }
-      }
-
-      function htmlToPlainText(html) {
-        try {
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          return doc.body.textContent || '';
-        } catch {
-          return html;
-        }
-      }
-
-      function bodyTextFromPayload(payload) {
-        const acc = { plain: '', htmlRaw: '' };
-        if (payload?.body?.data && (payload.mimeType || '').toLowerCase() === 'text/plain') {
-          acc.plain = decodeBodyData(payload.body.data);
-        } else if (payload?.body?.data && (payload.mimeType || '').toLowerCase() === 'text/html') {
-          acc.htmlRaw = decodeBodyData(payload.body.data);
-        } else {
-          extractBodiesFromPart(payload, acc);
-        }
-        if (acc.plain) return acc.plain.trimEnd();
-        if (acc.htmlRaw) return htmlToPlainText(acc.htmlRaw).trimEnd();
-        return '(No text body in this message. Attachments are not shown.)';
-      }
-
-      async function loadInbox() {
-        setStatus('Loading inbox…');
-        let response;
-        try {
-          response = await gapi.client.gmail.users.messages.list({
-            userId: 'me',
-            q: INBOX_QUERY,
-            maxResults: LIST_MAX,
-          });
+          $('viewer').style.display = 'block';
+          renderCurrent();
+          setStatus(`Loaded ${state.messages.length} messages.`);
         } catch (err) {
           setStatus(err.message || String(err), true);
-          return;
         }
-
-        const list = response.result.messages || [];
-        messageIds = list.map((m) => m.id).filter(Boolean);
-        if (messageIds.length === 0) {
-          document.getElementById('viewer').style.display = 'none';
-          setStatus('No messages in inbox (for this query).');
-          return;
-        }
-
-        currentIndex = 0;
-        document.getElementById('viewer').style.display = 'block';
-        await showMessageAtIndex(currentIndex);
-        setStatus('');
       }
 
-      async function showMessageAtIndex(index) {
-        if (index < 0 || index >= messageIds.length) return;
-        currentIndex = index;
-        const id = messageIds[currentIndex];
+      function renderCurrent() {
+        const msg = currentMessage();
+        if (!msg) {
+          $('viewer').style.display = 'none';
+          return;
+        }
 
-        setStatus('Loading message…');
-        let response;
+        $('meta').innerHTML =
+          `<strong>${escapeHtml(msg.subject || '(no subject)')}</strong>` +
+          `<div><b>From:</b> ${escapeHtml(msg.sender || '')}</div>` +
+          `<div><b>Date:</b> ${escapeHtml(msg.date || '')}</div>`;
+        $('email_body').textContent = msg.body || '(No plain text body extracted. Attachments are ignored.)';
+        $('position').textContent = `${state.currentIndex + 1} / ${state.messages.length}`;
+        $('back_btn').disabled = state.currentIndex <= 0;
+        $('next_btn').disabled = state.currentIndex >= state.messages.length - 1;
+        refreshLlmPanelFromCache();
+      }
+
+      function refreshLlmPanelFromCache() {
+        const msg = currentMessage();
+        if (!msg) return;
+        const cached = state.analysisById.get(msg.id);
+        if (cached) {
+          $('llm_state').textContent = 'Using cached result';
+          renderLlmResult(cached);
+        } else {
+          $('llm_state').textContent = 'Not analyzed yet — press “Classify with LLM”.';
+          $('llm_json').textContent = '';
+        }
+      }
+
+      function renderLlmResult(result) {
+        $('llm_json').textContent = JSON.stringify(result, null, 2);
+      }
+
+      async function analyzeCurrent(forceRefresh) {
+        const msg = currentMessage();
+        if (!msg) return;
+
+        const cacheKey = msg.id;
+        if (!forceRefresh && state.analysisById.has(cacheKey)) {
+          refreshLlmPanelFromCache();
+          return;
+        }
+
+        $('llm_state').textContent = 'Analyzing with LLM...';
+        $('llm_json').textContent = '';
         try {
-          response = await gapi.client.gmail.users.messages.get({
-            userId: 'me',
-            id: id,
-            format: 'full',
+          const resp = await fetch('/api/classify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subject: msg.subject || '',
+              sender: msg.sender || '',
+              snippet: msg.snippet || '',
+              body: msg.body || '',
+            }),
           });
+          const payload = await resp.json();
+          if (!resp.ok) {
+            throw new Error(payload.detail || 'LLM classification failed');
+          }
+
+          state.analysisById.set(cacheKey, payload);
+          $('llm_state').textContent = 'LLM result';
+          renderLlmResult(payload);
         } catch (err) {
-          setStatus(err.message || String(err), true);
-          return;
+          $('llm_state').textContent = 'LLM error';
+          renderLlmResult({ error: err.message || String(err) });
         }
-
-        const msg = response.result;
-        const headers = headerMap(msg.payload?.headers);
-        const subject = headers['subject'] || '(no subject)';
-        const from = headers['from'] || '';
-        const date = headers['date'] || '';
-        const bodyText = bodyTextFromPayload(msg.payload);
-
-        document.getElementById('meta').innerHTML =
-          '<strong>' +
-          escapeHtml(subject) +
-          '</strong>' +
-          '<div>From: ' +
-          escapeHtml(from) +
-          '</div>' +
-          '<div>Date: ' +
-          escapeHtml(date) +
-          '</div>';
-
-        document.getElementById('body').textContent = bodyText;
-
-        const pos = document.getElementById('position');
-        pos.textContent = `${currentIndex + 1} / ${messageIds.length}`;
-
-        document.getElementById('prev_btn').disabled = currentIndex === 0;
-        document.getElementById('next_btn').disabled = currentIndex === messageIds.length - 1;
-
-        setStatus('');
       }
 
-      function escapeHtml(s) {
-        const d = document.createElement('div');
-        d.textContent = s;
-        return d.innerHTML;
-      }
-
-      async function prevMessage() {
-        if (currentIndex <= 0) return;
-        await showMessageAtIndex(currentIndex - 1);
-      }
-
-      async function nextMessage() {
-        if (currentIndex >= messageIds.length - 1) return;
-        await showMessageAtIndex(currentIndex + 1);
+      function navigate(delta) {
+        const next = state.currentIndex + delta;
+        if (next < 0 || next >= state.messages.length) return;
+        state.currentIndex = next;
+        renderCurrent();
       }
     </script>
-    <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
-    <script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
   </body>
 </html>

@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jobinbox:local
+    ports:
+      - "8000:8000"
+      # One-time Gmail OAuth callback (fixed port; see README / JOBINBOX_OAUTH_PORT)
+      - "8090:8090"
+    environment:
+      JOBINBOX_DESKTOP_CREDENTIALS: /app/host/desktop_credentials.json
+      JOBINBOX_WEBAPP_CREDENTIALS: /app/host/webapp_credentials.json
+      JOBINBOX_TOKEN: /app/host/token.json
+      JOBINBOX_MAX_MESSAGES: "200"
+      JOBINBOX_GMAIL_QUERY: "in:inbox"
+      JOBINBOX_OLLAMA_BASE_URL: ${JOBINBOX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      JOBINBOX_OLLAMA_MODEL: ${JOBINBOX_OLLAMA_MODEL:-llama3.1:8b}
+      JOBINBOX_OLLAMA_TIMEOUT_S: ${JOBINBOX_OLLAMA_TIMEOUT_S:-180}
+      JOBINBOX_LLM_PROVIDER: ${JOBINBOX_LLM_PROVIDER:-ollama}
+      JOBINBOX_OPENAI_API_KEY: ${JOBINBOX_OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      JOBINBOX_OPENAI_MODEL: ${JOBINBOX_OPENAI_MODEL:-gpt-4o-mini}
+      JOBINBOX_OPENAI_BASE_URL: ${JOBINBOX_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      JOBINBOX_OPENAI_JSON_MODE: ${JOBINBOX_OPENAI_JSON_MODE:-1}
+      JOBINBOX_OAUTH_MODE: ${JOBINBOX_OAUTH_MODE:-manual}
+      JOBINBOX_OAUTH_PORT: ${JOBINBOX_OAUTH_PORT:-8090}
+      JOBINBOX_OAUTH_HOST: ${JOBINBOX_OAUTH_HOST:-localhost}
+      JOBINBOX_OAUTH_BIND_ADDR: ${JOBINBOX_OAUTH_BIND_ADDR:-0.0.0.0}
+      JOBINBOX_OAUTH_OPEN_BROWSER: ${JOBINBOX_OAUTH_OPEN_BROWSER:-0}
+    volumes:
+      - ./:/app/host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
