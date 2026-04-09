@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         "--limit",
         type=int,
         default=None,
-        help="Max messages (default: JOBINBOX_MAX_MESSAGES or 200)",
+        help="Max messages (default: JOBINBOX_MAX_MESSAGES or 500)",
     )
     p_fetch.add_argument(
         "--query",

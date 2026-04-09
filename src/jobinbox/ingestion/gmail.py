@@ -16,7 +16,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-_METADATA_HEADERS = ("Subject", "From", "Date")
+_METADATA_HEADERS = ("Subject", "From", "To", "Date")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -174,6 +174,7 @@ def _normalize_message(raw: dict[str, Any], *, include_body: bool) -> dict[str, 
         "snippet": raw.get("snippet") or "",
         "subject": headers.get("subject", ""),
         "from": headers.get("from", ""),
+        "to": headers.get("to", ""),
         "date": headers.get("date", ""),
         "labelIds": raw.get("labelIds") or [],
     }

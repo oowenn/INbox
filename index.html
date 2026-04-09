@@ -19,7 +19,7 @@
       }
       #controls {
         display: grid;
-        grid-template-columns: 8rem 1fr auto;
+        grid-template-columns: 8rem 1fr auto 8rem auto 8rem auto;
         gap: 0.5rem;
         align-items: center;
         margin: 1rem 0;
@@ -29,6 +29,21 @@
         border-radius: 6px;
         padding: 0.45rem 0.6rem;
       }
+      #result_actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: -0.25rem;
+        margin-bottom: 0.75rem;
+      }
+      #clear_confirm_box {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      #clear_confirm_box[hidden] {
+        display: none !important;
+      }
       button {
         border: 1px solid #999;
         background: #f3f3f3;
@@ -36,17 +51,46 @@
         padding: 0.45rem 0.75rem;
         cursor: pointer;
       }
+      button.danger {
+        border-color: #a82626;
+        background: #ffe9e9;
+        color: #7a1111;
+      }
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
-      #status {
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
         min-height: 1.25rem;
-        color: #444;
         margin-bottom: 0.75rem;
+        color: #444;
       }
       #status.error {
         color: #b00020;
+      }
+      .status-spinner {
+        width: 1rem;
+        height: 1rem;
+        border: 2px solid #ccc;
+        border-top-color: #333;
+        border-radius: 50%;
+        animation: status-spin 0.65s linear infinite;
+        flex-shrink: 0;
+      }
+      .status-spinner[hidden] {
+        display: none !important;
+      }
+      @keyframes status-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      #status {
+        min-height: 1.25rem;
+        flex: 1;
       }
       #viewer {
         display: none;
@@ -78,6 +122,12 @@
         gap: 0.5rem;
         align-items: center;
         margin-top: 0.75rem;
+      }
+      #nav input {
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0.35rem 0.5rem;
+        width: 5.5rem;
       }
       #position {
         color: #555;
@@ -116,17 +166,31 @@
   <body>
     <h1>INbox PoC</h1>
     <p class="subtle">
-      Browse the most recent emails (up to 200) and view LLM extraction output:
-      <code>{ application, company, role, stage }</code>.
+      Load cached emails from local DB, optionally fetch newest emails from Gmail, and view stored extraction output:
+      <code>{ application, company, role, stage, interview_date }</code>.
     </p>
 
     <div id="controls">
-      <input id="limit_input" type="number" min="1" max="200" value="200" />
+      <input id="limit_input" type="number" min="1" max="500" value="500" />
       <input id="query_input" type="text" value="in:inbox" />
-      <button id="load_btn" type="button">Load emails</button>
+      <button id="load_btn" type="button">Load cached emails</button>
+      <input id="fetch_input" type="number" min="1" max="500" value="100" />
+      <button id="fetch_btn" type="button">Fetch newest N from Gmail</button>
+      <input id="classify_n_input" type="number" min="1" max="500" value="100" />
+      <button id="classify_n_btn" type="button">Classify N (skip existing)</button>
+    </div>
+    <div id="result_actions">
+      <button id="clear_results_btn" type="button" class="danger">Clear Results</button>
+      <span id="clear_confirm_box" hidden>
+        <button id="clear_confirm_btn" type="button" class="danger">Confirm clear</button>
+        <button id="clear_cancel_btn" type="button">Cancel</button>
+      </span>
     </div>
 
-    <div id="status"></div>
+    <div id="status_row" class="status-row">
+      <span id="status_spinner" class="status-spinner" hidden aria-hidden="true"></span>
+      <div id="status"></div>
+    </div>
 
     <div id="viewer">
       <div id="meta"></div>
@@ -135,6 +199,8 @@
       <div id="nav">
         <button id="back_btn" type="button">Back</button>
         <button id="next_btn" type="button">Next</button>
+        <input id="goto_input" type="number" min="1" step="1" placeholder="Go to #" />
+        <button id="goto_btn" type="button">Go</button>
         <span id="position"></span>
       </div>
 
@@ -144,7 +210,6 @@
         <pre id="llm_json"></pre>
         <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem">
           <button id="classify_btn" type="button">Classify with LLM</button>
-          <button id="reanalyze_btn" type="button">Re-run LLM (ignore cache)</button>
         </div>
       </div>
     </div>
@@ -153,27 +218,96 @@
       const state = {
         messages: [],
         currentIndex: 0,
-        analysisById: new Map(),
+        batchInProgress: false,
+        clearResultsBusy: false,
       };
 
       const $ = (id) => document.getElementById(id);
 
       $('load_btn').addEventListener('click', loadMessages);
+      $('fetch_btn').addEventListener('click', fetchNewestMessages);
+      $('classify_n_btn').addEventListener('click', classifyNMessages);
+      $('clear_results_btn').addEventListener('click', requestClearResults);
+      $('clear_confirm_btn').addEventListener('click', clearResults);
+      $('clear_cancel_btn').addEventListener('click', cancelClearResults);
       $('back_btn').addEventListener('click', () => navigate(-1));
       $('next_btn').addEventListener('click', () => navigate(1));
-      $('classify_btn').addEventListener('click', () => analyzeCurrent(false));
-      $('reanalyze_btn').addEventListener('click', () => analyzeCurrent(true));
+      $('goto_btn').addEventListener('click', jumpToMessage);
+      $('goto_input').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          jumpToMessage();
+        }
+      });
+      $('classify_btn').addEventListener('click', classifyCurrentMessage);
 
-      function setStatus(text, isError) {
+      function setStatus(text, isError, options = {}) {
+        const { showSpinner = state.batchInProgress } = options;
         const el = $('status');
         el.textContent = text || '';
         el.className = isError ? 'error' : '';
+        const spin = $('status_spinner');
+        if (spin) spin.hidden = !showSpinner;
+      }
+
+      function setBatchUiBusy(busy) {
+        const ids = [
+          'load_btn',
+          'fetch_btn',
+          'classify_n_btn',
+          'classify_btn',
+          'clear_results_btn',
+          'clear_confirm_btn',
+          'clear_cancel_btn',
+        ];
+        for (const id of ids) {
+          const el = $(id);
+          if (el) el.disabled = busy;
+        }
+        const inputs = ['limit_input', 'query_input', 'fetch_input', 'classify_n_input'];
+        for (const id of inputs) {
+          const el = $(id);
+          if (el) el.disabled = busy;
+        }
+      }
+
+      function setClearConfirmVisible(visible) {
+        const box = $('clear_confirm_box');
+        if (box) box.hidden = !visible;
+      }
+
+      function setClearResultsBusy(busy) {
+        state.clearResultsBusy = busy;
+        const ids = [
+          'load_btn',
+          'fetch_btn',
+          'classify_n_btn',
+          'classify_btn',
+          'clear_results_btn',
+          'clear_confirm_btn',
+          'clear_cancel_btn',
+        ];
+        for (const id of ids) {
+          const el = $(id);
+          if (el) el.disabled = busy || state.batchInProgress;
+        }
+        const inputs = ['limit_input', 'query_input', 'fetch_input', 'classify_n_input'];
+        for (const id of inputs) {
+          const el = $(id);
+          if (el) el.disabled = busy || state.batchInProgress;
+        }
       }
 
       function clampLimit(value) {
         const parsed = Number.parseInt(value, 10);
-        if (!Number.isFinite(parsed)) return 200;
-        return Math.max(1, Math.min(200, parsed));
+        if (!Number.isFinite(parsed)) return 500;
+        return Math.max(1, Math.min(500, parsed));
+      }
+
+      function clampFetchCount(value) {
+        const parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return 100;
+        return Math.max(1, Math.min(500, parsed));
       }
 
       function currentMessage() {
@@ -186,17 +320,17 @@
         return div.innerHTML;
       }
 
-      async function loadMessages() {
+      async function loadMessages(silent = false) {
         const limit = clampLimit($('limit_input').value);
         $('limit_input').value = String(limit);
-        const query = $('query_input').value || 'in:inbox';
 
-        setStatus('Loading inbox from backend...');
+        if (!silent) {
+          setStatus('Loading cached emails from database...');
+        }
         $('viewer').style.display = 'none';
-        state.analysisById.clear();
 
         try {
-          const url = `/api/messages?limit=${limit}&query=${encodeURIComponent(query)}`;
+          const url = `/api/messages?limit=${limit}`;
           const resp = await fetch(url);
           const payload = await resp.json();
           if (!resp.ok) {
@@ -207,13 +341,15 @@
           state.currentIndex = 0;
 
           if (state.messages.length === 0) {
-            setStatus('No messages returned for that query.');
+            setStatus('No cached emails yet. Use "Fetch newest N from Gmail" first.');
             return;
           }
 
           $('viewer').style.display = 'block';
           renderCurrent();
-          setStatus(`Loaded ${state.messages.length} messages.`);
+          if (!silent) {
+            setStatus(`Loaded ${state.messages.length} cached emails.`);
+          }
         } catch (err) {
           setStatus(err.message || String(err), true);
         }
@@ -234,18 +370,20 @@
         $('position').textContent = `${state.currentIndex + 1} / ${state.messages.length}`;
         $('back_btn').disabled = state.currentIndex <= 0;
         $('next_btn').disabled = state.currentIndex >= state.messages.length - 1;
-        refreshLlmPanelFromCache();
+        $('goto_input').max = String(state.messages.length);
+        $('goto_input').value = String(state.currentIndex + 1);
+        $('classify_btn').textContent = msg.result ? 'Reclassify with LLM' : 'Classify with LLM';
+        refreshLlmPanelFromStored();
       }
 
-      function refreshLlmPanelFromCache() {
+      function refreshLlmPanelFromStored() {
         const msg = currentMessage();
         if (!msg) return;
-        const cached = state.analysisById.get(msg.id);
-        if (cached) {
-          $('llm_state').textContent = 'Using cached result';
-          renderLlmResult(cached);
+        if (msg.result) {
+          $('llm_state').textContent = 'Stored result found (email already fetched and previously classified).';
+          renderLlmResult(msg.result);
         } else {
-          $('llm_state').textContent = 'Not analyzed yet — press “Classify with LLM”.';
+          $('llm_state').textContent = 'Email already fetched. No stored classification yet — press "Classify with LLM".';
           $('llm_json').textContent = '';
         }
       }
@@ -254,23 +392,77 @@
         $('llm_json').textContent = JSON.stringify(result, null, 2);
       }
 
-      async function analyzeCurrent(forceRefresh) {
-        const msg = currentMessage();
-        if (!msg) return;
-
-        const cacheKey = msg.id;
-        if (!forceRefresh && state.analysisById.has(cacheKey)) {
-          refreshLlmPanelFromCache();
+      function requestClearResults() {
+        if (state.batchInProgress) {
+          setStatus('Wait for batch classification to finish before clearing results.', true);
           return;
         }
+        setClearConfirmVisible(true);
+        setStatus('Press "Confirm clear" to remove all stored classification results for this user.');
+      }
 
-        $('llm_state').textContent = 'Analyzing with LLM...';
+      function cancelClearResults() {
+        setClearConfirmVisible(false);
+        if (!state.batchInProgress) {
+          setStatus('');
+        }
+      }
+
+      async function clearResults() {
+        if (state.batchInProgress) {
+          setStatus('Wait for batch classification to finish before clearing results.', true);
+          return;
+        }
+        setClearResultsBusy(true);
+        setStatus('Clearing stored classification results...', false, { showSpinner: true });
+        try {
+          const resp = await fetch('/api/results/clear', { method: 'POST' });
+          const payload = await resp.json();
+          if (!resp.ok) {
+            throw new Error(payload.detail || 'Failed to clear results');
+          }
+          for (const msg of state.messages) {
+            msg.result = null;
+            msg.resultUpdatedAt = null;
+          }
+          if (state.messages.length > 0) {
+            renderCurrent();
+          }
+          setClearConfirmVisible(false);
+          const noun = payload.deleted === 1 ? 'result' : 'results';
+          setStatus(`Cleared ${payload.deleted} stored classification ${noun}.`, false, { showSpinner: false });
+        } catch (err) {
+          setStatus(err.message || String(err), true, { showSpinner: false });
+        } finally {
+          setClearResultsBusy(false);
+        }
+      }
+
+      function applyBatchResultToState(gmailId, result) {
+        if (!gmailId || !result) return;
+        const idx = state.messages.findIndex((msg) => msg.id === gmailId);
+        if (idx < 0) return;
+        state.messages[idx].result = result;
+        if (idx === state.currentIndex) {
+          $('classify_btn').textContent = 'Reclassify with LLM';
+          refreshLlmPanelFromStored();
+        }
+      }
+
+      async function classifyCurrentMessage() {
+        const msg = currentMessage();
+        if (!msg) return;
+        const isReclassify = Boolean(msg.result);
+        $('llm_state').textContent = isReclassify
+          ? 'Reclassifying with LLM and updating database...'
+          : 'Classifying with LLM and saving to database...';
         $('llm_json').textContent = '';
         try {
           const resp = await fetch('/api/classify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              gmail_id: msg.id || '',
               subject: msg.subject || '',
               sender: msg.sender || '',
               snippet: msg.snippet || '',
@@ -281,13 +473,136 @@
           if (!resp.ok) {
             throw new Error(payload.detail || 'LLM classification failed');
           }
-
-          state.analysisById.set(cacheKey, payload);
-          $('llm_state').textContent = 'LLM result';
+          msg.result = payload;
+          $('classify_btn').textContent = 'Reclassify with LLM';
+          $('llm_state').textContent = isReclassify
+            ? 'Stored result updated from LLM.'
+            : 'Stored result saved from LLM.';
           renderLlmResult(payload);
         } catch (err) {
           $('llm_state').textContent = 'LLM error';
           renderLlmResult({ error: err.message || String(err) });
+        }
+      }
+
+      async function fetchNewestMessages() {
+        const count = clampFetchCount($('fetch_input').value);
+        $('fetch_input').value = String(count);
+        const query = $('query_input').value || 'in:inbox';
+        setStatus(`Fetching ${count} newest emails from Gmail...`);
+        try {
+          const resp = await fetch('/api/messages/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              count,
+              query,
+            }),
+          });
+          const payload = await resp.json();
+          if (!resp.ok) {
+            throw new Error(payload.detail || 'Failed to fetch newest emails');
+          }
+          await loadMessages(true);
+          setStatus(
+            `Fetch complete: ${payload.fetched_new} new, ${payload.duplicates} duplicates skipped. Total cached: ${payload.total_cached}.`
+          );
+        } catch (err) {
+          setStatus(err.message || String(err), true);
+        }
+      }
+
+      async function classifyNMessages() {
+        const count = clampFetchCount($('classify_n_input').value);
+        $('classify_n_input').value = String(count);
+        setClearConfirmVisible(false);
+        state.batchInProgress = true;
+        setBatchUiBusy(true);
+        setStatus('Starting batch…', false, { showSpinner: true });
+        let donePayload = null;
+        try {
+          const resp = await fetch('/api/classify/batch/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+            body: JSON.stringify({ count }),
+          });
+          if (!resp.ok) {
+            let detail = 'Failed to classify batch';
+            try {
+              const errPayload = await resp.json();
+              if (errPayload.detail) {
+                detail =
+                  typeof errPayload.detail === 'string'
+                    ? errPayload.detail
+                    : JSON.stringify(errPayload.detail);
+              }
+            } catch {
+              detail = `${resp.status} ${resp.statusText}`;
+            }
+            throw new Error(detail);
+          }
+
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (value) buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              let event;
+              try {
+                event = JSON.parse(line.slice(6));
+              } catch {
+                continue;
+              }
+              if (event.type === 'start') {
+                const n = event.attempted ?? 0;
+                if (n === 0) {
+                  setStatus('No unprocessed cached emails found.', false, { showSpinner: false });
+                } else {
+                  setStatus(`Classifying: 0/${n}`, false, { showSpinner: true });
+                }
+              } else if (event.type === 'progress') {
+                const total = event.total ?? 0;
+                const finished = event.finished ?? 0;
+                if (event.ok && event.result) {
+                  applyBatchResultToState(event.gmail_id, event.result);
+                }
+                setStatus(`Classifying: ${finished}/${total}`, false, { showSpinner: true });
+              } else if (event.type === 'done') {
+                donePayload = event;
+              }
+            }
+
+            if (done) break;
+          }
+
+          if (donePayload && !donePayload.attempted) {
+            setStatus('No unprocessed cached emails found.', false, { showSpinner: false });
+            return;
+          }
+          if (donePayload) {
+            const failNote = donePayload.failed
+              ? ` ${donePayload.failed} failed (${donePayload.failed_ids.slice(0, 3).join(', ')}${donePayload.failed > 3 ? ', ...' : ''}).`
+              : '';
+            setStatus(
+              `Batch classify complete: processed ${donePayload.processed}/${donePayload.attempted} with concurrency ${donePayload.concurrency_used}.${failNote}`,
+              false,
+              { showSpinner: false }
+            );
+          }
+        } catch (err) {
+          setStatus(err.message || String(err), true, { showSpinner: false });
+        } finally {
+          state.batchInProgress = false;
+          setBatchUiBusy(false);
+          const spin = $('status_spinner');
+          if (spin) spin.hidden = true;
         }
       }
 
@@ -296,6 +611,22 @@
         if (next < 0 || next >= state.messages.length) return;
         state.currentIndex = next;
         renderCurrent();
+      }
+
+      function jumpToMessage() {
+        if (!state.messages.length) return;
+        const raw = $('goto_input').value;
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isFinite(parsed)) {
+          setStatus(`Enter a number between 1 and ${state.messages.length}.`, true);
+          return;
+        }
+        const clamped = Math.max(1, Math.min(state.messages.length, parsed));
+        state.currentIndex = clamped - 1;
+        renderCurrent();
+        if (!state.batchInProgress) {
+          setStatus('');
+        }
       }
     </script>
   </body>

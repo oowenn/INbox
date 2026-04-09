@@ -4,9 +4,9 @@ Personal PoC for an email-driven job application tracker. This README assumes yo
 
 The app loop:
 
-1. Backend fetches up to 200 Gmail messages (newest first; attachment bodies are not used).
-2. Frontend steps through them with Back/Next.
-3. Backend calls **Ollama on your host** and returns JSON per email: `application` (`yes`/`no`), `company`, `role`, `stage`.
+1. Frontend loads cached emails for the current user from local SQLite (`jobinbox.db`).
+2. You can fetch the newest *N* Gmail messages into that cache (duplicates skipped by `(user_id, gmail_id)`).
+3. LLM classification upserts one stored result per Gmail message: `application` (`yes`/`no`), `company`, `role`, `stage`, `interview_date`.
 
 See [DESIGN.md](DESIGN.md) for roadmap and architecture.
 
@@ -14,7 +14,7 @@ See [DESIGN.md](DESIGN.md) for roadmap and architecture.
 
 - **Docker** and **Docker Compose**
 - **LLM backend (pick one):**
-  - **Ollama** on the host (default `http://127.0.0.1:11434`), with a model pulled. **`JOBINBOX_OLLAMA_MODEL`** defaults to **`llama3.1:8b`** in code; smaller models (e.g. `llama3.2:3b`) are faster but easier to confuse on edge cases. For heavier accuracy, try `qwen2.5:14b` or `llama3.1:70b` after `ollama pull …`.
+  - **Ollama** on the host (default `http://127.0.0.1:11434` locally, `http://host.docker.internal:11434` in Compose), with a model pulled. **`JOBINBOX_OLLAMA_MODEL`** defaults to **`qwen3:1.7b`** (`ollama pull qwen3:1.7b`). Override with another tag if you prefer.
   - **OpenAI** (optional): set **`JOBINBOX_LLM_PROVIDER=openai`** and **`JOBINBOX_OPENAI_API_KEY`** or **`OPENAI_API_KEY`**. The container needs outbound HTTPS to `api.openai.com` (or your **`JOBINBOX_OPENAI_BASE_URL`**). Default model **`gpt-4o-mini`**; override with **`JOBINBOX_OPENAI_MODEL`**.
 - A **Google Cloud** project with **Gmail API** enabled and OAuth consent configured (Testing + your account as a **Test user** is enough for personal use)
 
@@ -27,6 +27,7 @@ The compose file bind-mounts this directory to **`/app/host`** in the container.
 | **`desktop_credentials.json`** | **Yes** | **Desktop app** OAuth client JSON — used for Gmail in the container. |
 | **`webapp_credentials.json`** | No | Web client JSON; not used for Gmail here. Optional (e.g. future browser demos). `GET /api/health` reports if it exists. |
 | **`token.json`** | Created after first OAuth | Saved on the host after you complete sign-in once. |
+| **`jobinbox.db`** | Created automatically | Local cache of fetched emails and latest classification result per Gmail message. |
 
 ## Google Cloud: OAuth clients
 
@@ -52,8 +53,11 @@ docker compose up --build
 
 Open **http://127.0.0.1:8000**.
 
-- Click **Load emails** (default query `in:inbox`, up to 200).
-- Use **Back** / **Next** and inspect **LLM output** for each message.
+- Click **Fetch newest N from Gmail** to ingest emails into local DB (query default `in:inbox`).
+- Click **Load cached emails** to browse what has already been pulled.
+- Use **Back** / **Next** and inspect stored **LLM output** for each message.
+- Use **Classify with LLM** or **Reclassify with LLM** (when a stored result already exists).
+- Use **Classify N (skip existing)** to batch-process up to N most recent unclassified cached emails (parallel workers are used under the hood).
 
 ### Optional: shell or one-off commands in the container
 
@@ -79,8 +83,10 @@ Override in `docker-compose.yml`, a `.env` file beside it, or `export` before `d
 | `JOBINBOX_DESKTOP_CREDENTIALS` | Default in compose: `/app/host/desktop_credentials.json` |
 | `JOBINBOX_WEBAPP_CREDENTIALS` | Default: `/app/host/webapp_credentials.json` |
 | `JOBINBOX_TOKEN` | Default: `/app/host/token.json` |
+| `JOBINBOX_DB_PATH` | Default: `<project_root>/jobinbox.db` (compose default `/app/host/jobinbox.db`) |
+| `JOBINBOX_USER_ID` | Logical user partition for cache/results (default `local-user`) |
 | `JOBINBOX_OLLAMA_BASE_URL` | Default: `http://host.docker.internal:11434` |
-| `JOBINBOX_OLLAMA_MODEL` | Default: `llama3.1:8b` (see Prerequisites for larger alternatives) |
+| `JOBINBOX_OLLAMA_MODEL` | Default: `qwen3:1.7b` |
 | `JOBINBOX_OLLAMA_TIMEOUT_S` | Default: `180` (HTTP **read** timeout for `/api/chat`; connect stays 30s) |
 | `JOBINBOX_LLM_PROVIDER` | `ollama` (default) or `openai` |
 | `JOBINBOX_OPENAI_API_KEY` / `OPENAI_API_KEY` | OpenAI secret when provider is `openai` |

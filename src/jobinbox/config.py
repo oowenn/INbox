@@ -57,6 +57,8 @@ class Settings:
     desktop_credentials_path: Path
     webapp_credentials_path: Path
     token_path: Path
+    db_path: Path
+    user_id: str
     max_messages: int
     gmail_query: str
     ollama_base_url: str
@@ -74,10 +76,12 @@ class Settings:
     def load(cls) -> "Settings":
         root = _project_root()
         token = os.environ.get("JOBINBOX_TOKEN", str(root / "token.json"))
-        max_msg = int(os.environ.get("JOBINBOX_MAX_MESSAGES", "200"))
+        db = os.environ.get("JOBINBOX_DB_PATH", str(root / "jobinbox.db"))
+        user_id = (os.environ.get("JOBINBOX_USER_ID") or "local-user").strip() or "local-user"
+        max_msg = int(os.environ.get("JOBINBOX_MAX_MESSAGES", "500"))
         query = os.environ.get("JOBINBOX_GMAIL_QUERY", "in:inbox")
         ollama_base_url = os.environ.get("JOBINBOX_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        ollama_model = os.environ.get("JOBINBOX_OLLAMA_MODEL", "llama3.1:8b")
+        ollama_model = os.environ.get("JOBINBOX_OLLAMA_MODEL", "qwen3:1.7b")
         ollama_timeout_s = float(os.environ.get("JOBINBOX_OLLAMA_TIMEOUT_S", "180"))
         llm_provider = os.environ.get("JOBINBOX_LLM_PROVIDER", "ollama").strip().lower()
         if llm_provider not in ("ollama", "openai"):
@@ -97,6 +101,8 @@ class Settings:
             desktop_credentials_path=_resolve_desktop_credentials_path(root),
             webapp_credentials_path=_resolve_webapp_credentials_path(root),
             token_path=Path(token),
+            db_path=Path(db).expanduser(),
+            user_id=user_id,
             max_messages=max_msg,
             gmail_query=query,
             ollama_base_url=ollama_base_url,
