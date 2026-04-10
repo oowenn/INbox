@@ -1,12 +1,13 @@
 # INbox
 
-Personal PoC for an email-driven job application tracker. This README assumes you run everything with **Docker Compose**.
+Dashboard-first product codebase for an email-driven job application tracker. This README assumes you run everything with **Docker Compose**.
 
-The app loop:
+Core workflow:
 
-1. Frontend loads cached emails for the current user from local SQLite (`jobinbox.db`).
-2. You can fetch the newest *N* Gmail messages into that cache (duplicates skipped by `(user_id, gmail_id)`).
-3. LLM classification upserts one stored result per Gmail message: `application` (`yes`/`no`), `company`, `role`, `stage`, `interview_date`.
+1. Pull newest Gmail messages into local SQLite (`jobinbox.db`) for the active user.
+2. Process unclassified cached emails in parallel with the configured LLM backend.
+3. Inspect transitions in the interactive Sankey chart and drill into `(company, role)` pairs.
+4. Optionally clear only results or wipe cached user emails/results to reset the dashboard state.
 
 See [DESIGN.md](DESIGN.md) for roadmap and architecture.
 
@@ -53,13 +54,11 @@ docker compose up --build
 
 Open **http://127.0.0.1:8000**.
 
-- Click **Fetch newest N from Gmail** to ingest emails into local DB (query default `in:inbox`).
-- Click **Load cached emails** to browse what has already been pulled.
-- Use **Back** / **Next** and inspect stored **LLM output** for each message.
-- Use **Classify with LLM** or **Reclassify with LLM** (when a stored result already exists).
-- Use **Classify N (skip existing)** to batch-process up to N most recent unclassified cached emails (parallel workers are used under the hood).
-- Use **Clear Results** (with confirmation) to delete stored classifications while keeping cached email content.
-- Use the **Application Flow (Sankey)** panel to inspect stage transitions; click a branch to see contributing `(company, role)` pairs.
+- Use **Pull newest** to fetch Gmail messages into the cache.
+- Use **Process emails** to classify up to *N* unprocessed emails (streamed progress + parallel workers).
+- Use **Clear results only** to remove classifications while keeping cached emails.
+- Use **Wipe cached emails + results** to remove this user's cache and linked result rows.
+- Use the **Application Flow (Sankey)** panel to inspect transitions and click a branch to list contributing `(company, role)` pairs.
 
 ### Optional: shell or one-off commands in the container
 

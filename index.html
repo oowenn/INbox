@@ -2,6 +2,125 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job Inbox Dashboard</title>
+    <link rel="stylesheet" href="/assets/css/dashboard.css" />
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <h1>Job Inbox Dashboard</h1>
+        <p>
+          Product-focused workflow: pull recent emails, process unclassified messages with LLM, and inspect outcome
+          flows in an interactive Sankey chart.
+        </p>
+      </header>
+
+      <section class="card controls-card">
+        <div class="control-grid">
+          <div class="control-block">
+            <h2>Pull</h2>
+            <label>
+              Gmail query
+              <input id="query_input" type="text" value="in:inbox" />
+            </label>
+            <label>
+              Newest emails
+              <input id="pull_count_input" type="number" min="1" max="500" value="100" />
+            </label>
+            <button id="pull_btn" type="button">Pull newest</button>
+          </div>
+
+          <div class="control-block">
+            <h2>Process</h2>
+            <label>
+              Unprocessed emails
+              <input id="process_count_input" type="number" min="1" max="500" value="100" />
+            </label>
+            <label>
+              Concurrency (optional)
+              <input id="process_concurrency_input" type="number" min="1" max="16" placeholder="auto" />
+            </label>
+            <button id="process_btn" type="button">Process emails</button>
+          </div>
+
+          <div class="control-block">
+            <h2>Wipe</h2>
+            <button id="clear_results_btn" type="button" class="danger subtle-danger">Clear results only</button>
+            <div id="clear_confirm_row" class="confirm-row" hidden>
+              <span>Remove all stored classifications for this user?</span>
+              <button id="clear_results_confirm_btn" type="button" class="danger">Confirm</button>
+              <button id="clear_results_cancel_btn" type="button">Cancel</button>
+            </div>
+
+            <button id="wipe_cache_btn" type="button" class="danger">Wipe cached emails + results</button>
+            <div id="wipe_confirm_row" class="confirm-row" hidden>
+              <span>Delete this user's cached emails and linked results?</span>
+              <button id="wipe_cache_confirm_btn" type="button" class="danger">Confirm</button>
+              <button id="wipe_cache_cancel_btn" type="button">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="status_row" class="status-row">
+        <span id="status_spinner" class="status-spinner" hidden aria-hidden="true"></span>
+        <div id="status_text"></div>
+      </section>
+
+      <section class="metrics-grid">
+        <article class="metric-card">
+          <div class="metric-label">Cached emails</div>
+          <div id="metric_cached" class="metric-value">-</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Classified</div>
+          <div id="metric_classified" class="metric-value">-</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">Unprocessed</div>
+          <div id="metric_unprocessed" class="metric-value">-</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">application=yes</div>
+          <div id="metric_yes" class="metric-value">-</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">application=no</div>
+          <div id="metric_no" class="metric-value">-</div>
+        </article>
+      </section>
+
+      <section class="card sankey-card">
+        <div class="section-head">
+          <h2>Application Flow Sankey</h2>
+          <button id="refresh_btn" type="button">Refresh dashboard</button>
+        </div>
+        <div id="sankey_status" class="subtle-text"></div>
+        <div id="sankey_chart"></div>
+      </section>
+
+      <section class="card detail-grid">
+        <div>
+          <h3>Branch details</h3>
+          <div id="branch_title" class="detail-title">Click any branch in the Sankey chart.</div>
+          <ul id="branch_pairs"></ul>
+        </div>
+        <div>
+          <h3>Stage breakdown (application=yes)</h3>
+          <ul id="stage_breakdown"></ul>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/assets/js/dashboard.js"></script>
+  </body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
     <title>INbox PoC - Gmail + LLM</title>
     <style>
       body {

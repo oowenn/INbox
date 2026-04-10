@@ -1,1 +1,1 @@
-"""Web app package for the local full-stack PoC."""
+"""Web app package for the dashboard-focused product surface."""

@@ -245,6 +245,53 @@ class JobInboxStore:
             ).fetchone()
         return int(row["c"]) if row else 0
 
+    def get_user_dashboard_summary(self, *, user_id: str) -> dict[str, Any]:
+        """Aggregate dashboard totals and stage counts for a single user."""
+        with self._connect() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(ue.gmail_id) AS cached_total,
+                    COALESCE(SUM(CASE WHEN er.gmail_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS classified_total,
+                    COALESCE(SUM(CASE WHEN er.gmail_id IS NULL THEN 1 ELSE 0 END), 0) AS unprocessed_total,
+                    COALESCE(SUM(CASE WHEN LOWER(COALESCE(er.application, '')) = 'yes' THEN 1 ELSE 0 END), 0) AS application_yes_total,
+                    COALESCE(SUM(CASE WHEN LOWER(COALESCE(er.application, '')) = 'no' THEN 1 ELSE 0 END), 0) AS application_no_total
+                FROM user_emails AS ue
+                LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
+                WHERE ue.user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+
+            stage_rows = conn.execute(
+                """
+                SELECT
+                    er.stage AS stage,
+                    COUNT(*) AS count
+                FROM user_emails AS ue
+                JOIN email_results AS er ON er.gmail_id = ue.gmail_id
+                WHERE ue.user_id = ? AND LOWER(er.application) = 'yes'
+                GROUP BY er.stage
+                ORDER BY count DESC, er.stage ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+        return {
+            "cached_total": int(totals["cached_total"] or 0) if totals else 0,
+            "classified_total": int(totals["classified_total"] or 0) if totals else 0,
+            "unprocessed_total": int(totals["unprocessed_total"] or 0) if totals else 0,
+            "application_yes_total": int(totals["application_yes_total"] or 0) if totals else 0,
+            "application_no_total": int(totals["application_no_total"] or 0) if totals else 0,
+            "stage_counts": [
+                {
+                    "stage": str(r["stage"] or "Unknown"),
+                    "count": int(r["count"] or 0),
+                }
+                for r in stage_rows
+            ],
+        }
+
     def list_user_classified_stage_events(self, *, user_id: str) -> list[dict[str, Any]]:
         """Classified stage events for this user, ordered by application pair and time."""
         with self._connect() as conn:
@@ -287,4 +334,43 @@ class JobInboxStore:
                 (user_id,),
             )
         return int(cur.rowcount or 0)
+
+    def clear_cached_messages_for_user(self, *, user_id: str) -> dict[str, int]:
+        """
+        Remove all cached emails for one user and prune orphan rows.
+
+        `email_results` tied to orphaned `email_content` rows are removed by FK cascade.
+        """
+        with self._connect() as conn:
+            before_results = conn.execute(
+                "SELECT COUNT(*) AS c FROM email_results"
+            ).fetchone()
+
+            user_links_cur = conn.execute(
+                "DELETE FROM user_emails WHERE user_id = ?",
+                (user_id,),
+            )
+
+            orphan_content_cur = conn.execute(
+                """
+                DELETE FROM email_content
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM user_emails AS ue
+                    WHERE ue.gmail_id = email_content.gmail_id
+                )
+                """
+            )
+
+            after_results = conn.execute(
+                "SELECT COUNT(*) AS c FROM email_results"
+            ).fetchone()
+
+        before_results_n = int(before_results["c"] or 0) if before_results else 0
+        after_results_n = int(after_results["c"] or 0) if after_results else 0
+        return {
+            "deleted_user_links": int(user_links_cur.rowcount or 0),
+            "deleted_orphan_messages": int(orphan_content_cur.rowcount or 0),
+            "deleted_orphan_results": max(0, before_results_n - after_results_n),
+        }
 
