@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterator
@@ -85,6 +86,29 @@ class BatchClassifyResponse(BaseModel):
     failed: int
     concurrency_used: int
     failed_ids: list[str]
+
+
+class SankeyNode(BaseModel):
+    label: str
+
+
+class SankeyLink(BaseModel):
+    id: str
+    source: int
+    target: int
+    value: int
+
+
+class SankeyCompanyRolePair(BaseModel):
+    company: str
+    role: str
+
+
+class SankeyResponse(BaseModel):
+    nodes: list[SankeyNode]
+    links: list[SankeyLink]
+    branch_pairs: dict[str, list[SankeyCompanyRolePair]]
+    total_pairs: int
 
 
 def _gmail_client() -> GmailIngestion:
@@ -279,6 +303,96 @@ def _to_inbox_message(row: dict[str, object]) -> InboxMessage:
     )
 
 
+def _build_sankey_response() -> SankeyResponse:
+    rows = store.list_user_classified_stage_events(user_id=settings.user_id)
+    if not rows:
+        return SankeyResponse(nodes=[SankeyNode(label="Applications")], links=[], branch_pairs={}, total_pairs=0)
+
+    events_by_pair: dict[tuple[str, str], list[tuple[tuple[int, str, str], str]]] = defaultdict(list)
+    for row in rows:
+        company = str(row.get("company") or "(Unknown Company)")
+        role = str(row.get("role") or "(Unknown Role)")
+        stage = str(row.get("stage") or "Unknown").strip() or "Unknown"
+        sort_key = (
+            int(row.get("internal_ts") or 0),
+            str(row.get("fetched_at") or ""),
+            str(row.get("result_updated_at") or ""),
+        )
+        events_by_pair[(company, role)].append((sort_key, stage))
+
+    transition_counts: dict[tuple[str, str], int] = defaultdict(int)
+    transition_pairs: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+
+    for pair, events in events_by_pair.items():
+        ordered = sorted(events, key=lambda item: item[0])
+        stage_path: list[str] = []
+        for _, stage in ordered:
+            if not stage_path or stage_path[-1] != stage:
+                stage_path.append(stage)
+        if not stage_path:
+            continue
+
+        edges: list[tuple[str, str]] = [("Applications", stage_path[0])]
+        edges.extend((a, b) for a, b in zip(stage_path, stage_path[1:]))
+
+        seen_for_pair: set[tuple[str, str]] = set()
+        for edge in edges:
+            if edge in seen_for_pair:
+                continue
+            seen_for_pair.add(edge)
+            transition_counts[edge] += 1
+            transition_pairs[edge].add(pair)
+
+    labels = {"Applications"}
+    for source, target in transition_counts:
+        labels.add(source)
+        labels.add(target)
+
+    preferred = [
+        "Applications",
+        "Received",
+        "Online Assessment",
+        "Interview",
+        "Offer",
+        "Rejection",
+        "Unknown",
+    ]
+    ordered_labels = [label for label in preferred if label in labels]
+    ordered_labels.extend(sorted(label for label in labels if label not in ordered_labels))
+    index_by_label = {label: idx for idx, label in enumerate(ordered_labels)}
+
+    links: list[SankeyLink] = []
+    branch_pairs: dict[str, list[SankeyCompanyRolePair]] = {}
+    for (source, target), value in sorted(
+        transition_counts.items(),
+        key=lambda item: (index_by_label.get(item[0][0], 999), index_by_label.get(item[0][1], 999)),
+    ):
+        edge_id = f"{source} -> {target}"
+        links.append(
+            SankeyLink(
+                id=edge_id,
+                source=index_by_label[source],
+                target=index_by_label[target],
+                value=value,
+            )
+        )
+        pairs = sorted(
+            transition_pairs[(source, target)],
+            key=lambda pair: (pair[0].lower(), pair[1].lower()),
+        )
+        branch_pairs[edge_id] = [
+            SankeyCompanyRolePair(company=company, role=role)
+            for company, role in pairs
+        ]
+
+    return SankeyResponse(
+        nodes=[SankeyNode(label=label) for label in ordered_labels],
+        links=links,
+        branch_pairs=branch_pairs,
+        total_pairs=len(events_by_pair),
+    )
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(Path(settings.project_root) / "index.html")
@@ -298,6 +412,14 @@ def health() -> dict[str, object]:
         "webapp_credentials_path": str(settings.webapp_credentials_path),
         "webapp_credentials_found": settings.webapp_credentials_path.is_file(),
     }
+
+
+@app.get("/api/analytics/sankey", response_model=SankeyResponse)
+def sankey_analytics() -> SankeyResponse:
+    try:
+        return _build_sankey_response()
+    except Exception as exc:  # pragma: no cover - defensive fallback for API surface
+        raise HTTPException(status_code=500, detail=f"Sankey analytics error: {exc}") from exc
 
 
 @app.get("/api/messages", response_model=InboxResponse)

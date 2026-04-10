@@ -58,6 +58,8 @@ Open **http://127.0.0.1:8000**.
 - Use **Back** / **Next** and inspect stored **LLM output** for each message.
 - Use **Classify with LLM** or **Reclassify with LLM** (when a stored result already exists).
 - Use **Classify N (skip existing)** to batch-process up to N most recent unclassified cached emails (parallel workers are used under the hood).
+- Use **Clear Results** (with confirmation) to delete stored classifications while keeping cached email content.
+- Use the **Application Flow (Sankey)** panel to inspect stage transitions; click a branch to see contributing `(company, role)` pairs.
 
 ### Optional: shell or one-off commands in the container
 

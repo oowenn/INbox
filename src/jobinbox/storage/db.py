@@ -245,6 +245,33 @@ class JobInboxStore:
             ).fetchone()
         return int(row["c"]) if row else 0
 
+    def list_user_classified_stage_events(self, *, user_id: str) -> list[dict[str, Any]]:
+        """Classified stage events for this user, ordered by application pair and time."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(TRIM(er.company), ''), '(Unknown Company)') AS company,
+                    COALESCE(NULLIF(TRIM(er.role), ''), '(Unknown Role)') AS role,
+                    er.stage AS stage,
+                    CAST(COALESCE(ec.internal_date, '0') AS INTEGER) AS internal_ts,
+                    ue.fetched_at AS fetched_at,
+                    er.updated_at AS result_updated_at
+                FROM user_emails AS ue
+                JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
+                JOIN email_results AS er ON er.gmail_id = ue.gmail_id
+                WHERE ue.user_id = ? AND LOWER(er.application) = 'yes'
+                ORDER BY
+                    LOWER(COALESCE(NULLIF(TRIM(er.company), ''), '(Unknown Company)')),
+                    LOWER(COALESCE(NULLIF(TRIM(er.role), ''), '(Unknown Role)')),
+                    CAST(COALESCE(ec.internal_date, '0') AS INTEGER),
+                    ue.fetched_at,
+                    er.updated_at
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def clear_results_for_user(self, *, user_id: str) -> int:
         """Delete stored classification rows for the provided user."""
         with self._connect() as conn:

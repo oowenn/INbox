@@ -156,12 +156,56 @@
         max-height: 22vh;
         overflow: auto;
       }
+      #analytics_card {
+        margin-top: 1rem;
+      }
+      #analytics_top_row {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        margin-bottom: 0.5rem;
+      }
+      #sankey_status {
+        color: #555;
+      }
+      #sankey_status.error {
+        color: #b00020;
+      }
+      #sankey_chart {
+        width: 100%;
+        min-height: 300px;
+        height: 430px;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        background: #fff;
+      }
+      #branch_panel {
+        margin-top: 0.65rem;
+        border: 1px solid #ececec;
+        border-radius: 6px;
+        padding: 0.65rem;
+        background: #fafafa;
+      }
+      #branch_title {
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+      #branch_pairs {
+        margin: 0;
+        padding-left: 1.2rem;
+        max-height: 180px;
+        overflow: auto;
+      }
+      #branch_pairs li {
+        margin: 0.15rem 0;
+      }
       @media (max-width: 700px) {
         #controls {
           grid-template-columns: 1fr;
         }
       }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
   </head>
   <body>
     <h1>INbox PoC</h1>
@@ -214,12 +258,26 @@
       </div>
     </div>
 
+    <div class="card" id="analytics_card">
+      <h2>Application Flow (Sankey)</h2>
+      <div id="analytics_top_row">
+        <button id="sankey_refresh_btn" type="button">Refresh Sankey</button>
+        <div id="sankey_status"></div>
+      </div>
+      <div id="sankey_chart"></div>
+      <div id="branch_panel">
+        <div id="branch_title">Click a branch to inspect contributing application pairs.</div>
+        <ul id="branch_pairs"></ul>
+      </div>
+    </div>
+
     <script>
       const state = {
         messages: [],
         currentIndex: 0,
         batchInProgress: false,
         clearResultsBusy: false,
+        sankeyPayload: null,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -230,6 +288,7 @@
       $('clear_results_btn').addEventListener('click', requestClearResults);
       $('clear_confirm_btn').addEventListener('click', clearResults);
       $('clear_cancel_btn').addEventListener('click', cancelClearResults);
+      $('sankey_refresh_btn').addEventListener('click', () => loadSankey({ silent: false }));
       $('back_btn').addEventListener('click', () => navigate(-1));
       $('next_btn').addEventListener('click', () => navigate(1));
       $('goto_btn').addEventListener('click', jumpToMessage);
@@ -259,6 +318,7 @@
           'clear_results_btn',
           'clear_confirm_btn',
           'clear_cancel_btn',
+          'sankey_refresh_btn',
         ];
         for (const id of ids) {
           const el = $(id);
@@ -286,6 +346,7 @@
           'clear_results_btn',
           'clear_confirm_btn',
           'clear_cancel_btn',
+          'sankey_refresh_btn',
         ];
         for (const id of ids) {
           const el = $(id);
@@ -295,6 +356,115 @@
         for (const id of inputs) {
           const el = $(id);
           if (el) el.disabled = busy || state.batchInProgress;
+        }
+      }
+
+      function setSankeyStatus(text, isError = false) {
+        const el = $('sankey_status');
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = isError ? 'error' : '';
+      }
+
+      function renderBranchPairs(edgeId, pairs) {
+        const title = $('branch_title');
+        const list = $('branch_pairs');
+        if (!title || !list) return;
+
+        if (!edgeId) {
+          title.textContent = 'Click a branch to inspect contributing application pairs.';
+          list.innerHTML = '';
+          return;
+        }
+
+        const count = pairs.length;
+        const noun = count === 1 ? 'pair' : 'pairs';
+        title.textContent = `${edgeId} (${count} ${noun})`;
+        if (!pairs.length) {
+          list.innerHTML = '<li>No company/role pairs mapped to this branch.</li>';
+          return;
+        }
+
+        list.innerHTML = pairs
+          .map((pair) => `<li>${escapeHtml(pair.company || '(Unknown Company)')} | ${escapeHtml(pair.role || '(Unknown Role)')}</li>`)
+          .join('');
+      }
+
+      async function renderSankey(payload) {
+        state.sankeyPayload = payload;
+        const chart = $('sankey_chart');
+        if (!chart) return;
+        if (!window.Plotly) {
+          setSankeyStatus('Sankey library failed to load (check CDN access).', true);
+          return;
+        }
+
+        if (!payload || !Array.isArray(payload.links) || payload.links.length === 0) {
+          chart.innerHTML = '';
+          renderBranchPairs('', []);
+          setSankeyStatus('No classified application paths yet.');
+          return;
+        }
+
+        const trace = {
+          type: 'sankey',
+          arrangement: 'snap',
+          node: {
+            pad: 16,
+            thickness: 22,
+            line: { color: '#bbb', width: 0.5 },
+            label: payload.nodes.map((n) => n.label),
+          },
+          link: {
+            source: payload.links.map((l) => l.source),
+            target: payload.links.map((l) => l.target),
+            value: payload.links.map((l) => l.value),
+            customdata: payload.links.map((l) => l.id),
+            hovertemplate: '%{customdata}<br>%{value} application pair(s)<extra></extra>',
+          },
+        };
+
+        const layout = {
+          margin: { l: 10, r: 10, t: 10, b: 10 },
+          paper_bgcolor: '#ffffff',
+          plot_bgcolor: '#ffffff',
+          font: { size: 13 },
+        };
+
+        if (typeof chart.removeAllListeners === 'function') {
+          chart.removeAllListeners('plotly_click');
+        }
+
+        await Plotly.react(chart, [trace], layout, { displayModeBar: false, responsive: true });
+
+        chart.on('plotly_click', (event) => {
+          const point = event?.points?.[0];
+          const edgeId = point?.customdata;
+          if (!edgeId) return;
+          const pairs = payload.branch_pairs?.[edgeId] || [];
+          renderBranchPairs(edgeId, pairs);
+        });
+
+        renderBranchPairs('', []);
+        setSankeyStatus(
+          `Loaded ${payload.links.length} branches across ${payload.total_pairs} application pairs.`
+        );
+      }
+
+      async function loadSankey(options = {}) {
+        const { silent = true } = options;
+        if (!silent) {
+          setSankeyStatus('Loading Sankey analytics...');
+        }
+        try {
+          const resp = await fetch('/api/analytics/sankey');
+          const payload = await resp.json();
+          if (!resp.ok) {
+            throw new Error(payload.detail || 'Failed to load sankey analytics');
+          }
+          await renderSankey(payload);
+        } catch (err) {
+          setSankeyStatus(err.message || String(err), true);
         }
       }
 
@@ -342,11 +512,13 @@
 
           if (state.messages.length === 0) {
             setStatus('No cached emails yet. Use "Fetch newest N from Gmail" first.');
+            void loadSankey({ silent: true });
             return;
           }
 
           $('viewer').style.display = 'block';
           renderCurrent();
+          void loadSankey({ silent: true });
           if (!silent) {
             setStatus(`Loaded ${state.messages.length} cached emails.`);
           }
@@ -431,6 +603,7 @@
           setClearConfirmVisible(false);
           const noun = payload.deleted === 1 ? 'result' : 'results';
           setStatus(`Cleared ${payload.deleted} stored classification ${noun}.`, false, { showSpinner: false });
+          void loadSankey({ silent: true });
         } catch (err) {
           setStatus(err.message || String(err), true, { showSpinner: false });
         } finally {
@@ -479,6 +652,7 @@
             ? 'Stored result updated from LLM.'
             : 'Stored result saved from LLM.';
           renderLlmResult(payload);
+          void loadSankey({ silent: true });
         } catch (err) {
           $('llm_state').textContent = 'LLM error';
           renderLlmResult({ error: err.message || String(err) });
@@ -595,6 +769,7 @@
               false,
               { showSpinner: false }
             );
+            void loadSankey({ silent: true });
           }
         } catch (err) {
           setStatus(err.message || String(err), true, { showSpinner: false });
@@ -628,6 +803,8 @@
           setStatus('');
         }
       }
+
+      void loadSankey({ silent: true });
     </script>
   </body>
 </html>
