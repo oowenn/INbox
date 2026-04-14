@@ -16,6 +16,144 @@ from jobinbox.web.models import (
 )
 from jobinbox.web.runtime import WebRuntime
 
+PIPELINE_STAGES = ("Received", "Online Assessment", "Interview", "Offer")
+
+STAGE_ALIASES = {
+    "confirmation": "Received",
+    "first interview": "Interview",
+    "further interview": "Interview",
+    "final interview": "Interview",
+}
+
+REJECTION_TARGET_BY_SOURCE = {
+    "Received": "Rejected after Received",
+    "Online Assessment": "Rejected after Online Assessment",
+    "Interview": "Rejected after Interview",
+    "Unknown": "Rejected after Unknown",
+}
+
+PENDING_TARGET_BY_SOURCE = {
+    "Received": "Pending after Received",
+    "Online Assessment": "Pending after Online Assessment",
+    "Interview": "Pending after Interview",
+    "Unknown": "Pending after Unknown",
+}
+
+LABEL_ORDER = (
+    "Received",
+    "Rejected after Received",
+    "Pending after Received",
+    "Online Assessment",
+    "Rejected after Online Assessment",
+    "Pending after Online Assessment",
+    "Interview",
+    "Rejected after Interview",
+    "Pending after Interview",
+    "Offer",
+    "Unknown",
+    "Rejected after Unknown",
+    "Pending after Unknown",
+)
+
+NODE_POSITION = {
+    "Received": (0.02, 0.62),
+    "Rejected after Received": (0.18, 0.18),
+    "Pending after Received": (0.18, 0.52),
+    "Online Assessment": (0.42, 0.74),
+    "Rejected after Online Assessment": (0.68, 0.14),
+    "Pending after Online Assessment": (0.68, 0.46),
+    "Interview": (0.82, 0.76),
+    "Rejected after Interview": (0.94, 0.10),
+    "Pending after Interview": (0.94, 0.40),
+    "Offer": (0.96, 0.80),
+    "Unknown": (0.02, 0.86),
+    "Rejected after Unknown": (0.18, 0.36),
+    "Pending after Unknown": (0.18, 0.66),
+}
+
+
+def _normalize_stage(stage: str) -> str:
+    raw = stage.strip()
+    if not raw:
+        return "Unknown"
+    lowered = raw.lower()
+    if lowered in STAGE_ALIASES:
+        return STAGE_ALIASES[lowered]
+    if raw in PIPELINE_STAGES or raw in {"Rejection", "Unknown"}:
+        return raw
+    return "Unknown"
+
+
+def _build_enforced_edges(stage_path: list[str]) -> list[tuple[str, str]]:
+    """
+    Enforce a canonical pipeline order while allowing branch rejections.
+
+    Canonical forward stages:
+    Received -> Online Assessment -> Interview -> Offer
+    Rejections branch from the furthest reached stage.
+    """
+    observed = set(stage_path)
+    stage_index = {stage: idx for idx, stage in enumerate(PIPELINE_STAGES)}
+    observed_main = [stage for stage in PIPELINE_STAGES if stage in observed]
+    ordered_main: list[str] = []
+    if observed_main:
+        furthest_idx = max(stage_index[stage] for stage in observed_main)
+        ordered_main = list(PIPELINE_STAGES[: furthest_idx + 1])
+
+    rejection_source = ""
+    if "Rejection" in observed:
+        if ordered_main:
+            rejection_source = ordered_main[-1]
+        elif "Unknown" in observed:
+            rejection_source = "Unknown"
+
+    edges: list[tuple[str, str]] = []
+    if ordered_main:
+        for idx, stage in enumerate(ordered_main):
+            if stage == "Offer":
+                # Offer is terminal in the current product dashboard.
+                break
+            next_stage = ordered_main[idx + 1] if idx + 1 < len(ordered_main) else None
+            if stage == rejection_source:
+                edges.append((stage, REJECTION_TARGET_BY_SOURCE[stage]))
+                break
+            if next_stage:
+                edges.append((stage, next_stage))
+            else:
+                edges.append((stage, PENDING_TARGET_BY_SOURCE[stage]))
+    elif "Unknown" in observed:
+        if rejection_source == "Unknown":
+            edges.append(("Unknown", REJECTION_TARGET_BY_SOURCE["Unknown"]))
+        else:
+            edges.append(("Unknown", PENDING_TARGET_BY_SOURCE["Unknown"]))
+
+    return edges
+
+
+def _edge_stack_order(source: str, target: str) -> int:
+    """
+    Control per-source outgoing stacking order.
+
+    Plotly tends to place earlier links lower in a node column, so for the desired
+    visual top->middle->bottom = Rejected, Pending, Next we emit as:
+    Next, Pending, Rejected.
+    """
+    rejected = REJECTION_TARGET_BY_SOURCE.get(source, "")
+    pending = PENDING_TARGET_BY_SOURCE.get(source, "")
+    next_stage = ""
+    if source in PIPELINE_STAGES:
+        idx = PIPELINE_STAGES.index(source)
+        if idx + 1 < len(PIPELINE_STAGES):
+            next_stage = PIPELINE_STAGES[idx + 1]
+
+    if target == next_stage:
+        return 0
+    if target == pending:
+        return 1
+    if target == rejected:
+        return 2
+    return 3
+
 
 def _to_inbox_message(row: dict[str, object]) -> InboxMessage:
     result = None
@@ -73,13 +211,13 @@ def build_dashboard_summary(runtime: WebRuntime) -> DashboardSummaryResponse:
 def build_sankey(runtime: WebRuntime) -> SankeyResponse:
     rows = runtime.store.list_user_classified_stage_events(user_id=runtime.settings.user_id)
     if not rows:
-        return SankeyResponse(nodes=[SankeyNode(label="Applications")], links=[], branch_pairs={}, total_pairs=0)
+        return SankeyResponse(nodes=[SankeyNode(label="Received")], links=[], branch_pairs={}, total_pairs=0)
 
     events_by_pair: dict[tuple[str, str], list[tuple[tuple[int, str, str], str]]] = defaultdict(list)
     for row in rows:
         company = str(row.get("company") or "(Unknown Company)")
         role = str(row.get("role") or "(Unknown Role)")
-        stage = str(row.get("stage") or "Unknown").strip() or "Unknown"
+        stage = _normalize_stage(str(row.get("stage") or "Unknown"))
         sort_key = (
             int(row.get("internal_ts") or 0),
             str(row.get("fetched_at") or ""),
@@ -89,6 +227,7 @@ def build_sankey(runtime: WebRuntime) -> SankeyResponse:
 
     transition_counts: dict[tuple[str, str], int] = defaultdict(int)
     transition_pairs: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+    contributing_pairs: set[tuple[str, str]] = set()
 
     for pair, events in events_by_pair.items():
         ordered = sorted(events, key=lambda item: item[0])
@@ -99,40 +238,43 @@ def build_sankey(runtime: WebRuntime) -> SankeyResponse:
         if not stage_path:
             continue
 
-        edges: list[tuple[str, str]] = [("Applications", stage_path[0])]
-        edges.extend((a, b) for a, b in zip(stage_path, stage_path[1:]))
+        edges = _build_enforced_edges(stage_path)
 
         seen_for_pair: set[tuple[str, str]] = set()
         for edge in edges:
+            if "Applications" in edge:
+                # Safety guard: the product sankey no longer uses an Applications root node.
+                continue
             if edge in seen_for_pair:
                 continue
             seen_for_pair.add(edge)
             transition_counts[edge] += 1
             transition_pairs[edge].add(pair)
+        if seen_for_pair:
+            contributing_pairs.add(pair)
 
-    labels = {"Applications"}
+    labels = {"Received"}
     for source, target in transition_counts:
         labels.add(source)
         labels.add(target)
 
-    preferred = [
-        "Applications",
-        "Received",
-        "Online Assessment",
-        "Interview",
-        "Offer",
-        "Rejection",
-        "Unknown",
-    ]
-    ordered_labels = [label for label in preferred if label in labels]
+    ordered_labels = [label for label in LABEL_ORDER if label in labels]
     ordered_labels.extend(sorted(label for label in labels if label not in ordered_labels))
     index_by_label = {label: idx for idx, label in enumerate(ordered_labels)}
+    label_rank = {label: idx for idx, label in enumerate(LABEL_ORDER)}
 
     links: list[SankeyLink] = []
     branch_pairs: dict[str, list[SankeyCompanyRolePair]] = {}
     for (source, target), value in sorted(
         transition_counts.items(),
-        key=lambda item: (index_by_label.get(item[0][0], 999), index_by_label.get(item[0][1], 999)),
+        key=lambda item: (
+            label_rank.get(item[0][0], 999),
+            _edge_stack_order(item[0][0], item[0][1]),
+            NODE_POSITION.get(item[0][1], (0.0, 0.5))[0],
+            label_rank.get(item[0][1], 999),
+            item[0][0],
+            item[0][1],
+        ),
     ):
         edge_id = f"{source} -> {target}"
         links.append(
@@ -153,8 +295,15 @@ def build_sankey(runtime: WebRuntime) -> SankeyResponse:
         ]
 
     return SankeyResponse(
-        nodes=[SankeyNode(label=label) for label in ordered_labels],
+        nodes=[
+            SankeyNode(
+                label=label,
+                x=NODE_POSITION.get(label, (None, None))[0],
+                y=NODE_POSITION.get(label, (None, None))[1],
+            )
+            for label in ordered_labels
+        ],
         links=links,
         branch_pairs=branch_pairs,
-        total_pairs=len(events_by_pair),
+        total_pairs=len(contributing_pairs),
     )

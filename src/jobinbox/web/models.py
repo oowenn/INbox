@@ -93,6 +93,8 @@ class BatchClassifyResponse(BaseModel):
 
 class SankeyNode(BaseModel):
     label: str
+    x: float | None = None
+    y: float | None = None
 
 
 class SankeyLink(BaseModel):

@@ -275,3 +275,8 @@ Where users can:
 - Track applications automatically
 - Understand performance
 - Optimize their job search strategy
+
+## Notes for next session
+- dynamic update for rows in table (after search)
+- normalize role titles (agentic system with data/context lookup)
+- reduce stage breakdown to final stages per role
