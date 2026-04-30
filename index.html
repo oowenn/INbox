@@ -22,10 +22,6 @@
           <div class="control-block">
             <h2>Pull</h2>
             <label>
-              Gmail query
-              <input id="query_input" type="text" value="in:inbox" />
-            </label>
-            <label>
               Newest emails
               <input id="pull_count_input" type="number" min="1" max="500" value="100" />
             </label>
@@ -38,11 +34,20 @@
               Unprocessed emails
               <input id="process_count_input" type="number" min="1" max="500" value="100" />
             </label>
-            <label>
-              Concurrency (optional)
-              <input id="process_concurrency_input" type="number" min="1" max="16" placeholder="auto" />
-            </label>
             <button id="process_btn" type="button">Process emails</button>
+          </div>
+
+          <div class="control-block">
+            <h2>Application Cycle</h2>
+            <label>
+              Fetch limit (since most recent Jun 1)
+              <input id="cycle_fetch_limit_input" type="number" min="100" max="100000" value="12000" />
+            </label>
+            <label>
+              Classify batch size
+              <input id="cycle_batch_size_input" type="number" min="10" max="500" value="250" />
+            </label>
+            <button id="cycle_run_btn" type="button">Get Application Cycle</button>
           </div>
 
           <div class="control-block">
@@ -69,6 +74,35 @@
         <div id="status_text"></div>
       </section>
 
+      <section class="card failures-card">
+        <div class="section-head">
+          <h2>Classification failures</h2>
+          <button id="load_failures_btn" type="button">Load recent</button>
+        </div>
+        <p class="subtle-text">
+          Each batch or single-classify error is logged to the server DB and stderr. Use this table to match
+          <code>gmail_id</code> to subjects and error text, or call
+          <code>GET /api/classification/failures?limit=500</code>.
+        </p>
+        <div class="branch-table-wrap failures-table-wrap">
+          <table class="branch-table failures-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Message</th>
+                <th>Type</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="failures_tbody">
+              <tr>
+                <td colspan="4" class="table-empty">Press &quot;Load recent&quot; to fetch from the server.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="metrics-grid">
         <article class="metric-card">
           <div class="metric-label">Cached emails</div>
@@ -92,10 +126,31 @@
         </article>
       </section>
 
+      <section class="card timeline-card" id="timeline_card">
+        <div class="section-head">
+          <h2>Email timeline</h2>
+          <div class="section-actions">
+            <button id="timeline_toggle_btn" type="button">Show</button>
+          </div>
+        </div>
+        <div class="subtle-text">
+          Counts of cached emails by month (uses Gmail internalDate). Useful for spotting gaps.
+        </div>
+        <div id="timeline_body" hidden>
+          <div id="timeline_status" class="subtle-text">Not loaded yet.</div>
+          <div id="timeline_scroll" class="timeline-scroll">
+            <div id="timeline_chart" class="timeline-chart"></div>
+          </div>
+        </div>
+      </section>
+
       <section class="card sankey-card">
         <div class="section-head">
           <h2>Application Flow Sankey</h2>
-          <button id="refresh_btn" type="button">Refresh dashboard</button>
+          <div class="section-actions">
+            <button id="show_emails_btn" type="button">Show Emails</button>
+            <button id="refresh_btn" type="button">Refresh dashboard</button>
+          </div>
         </div>
         <div id="sankey_status" class="subtle-text"></div>
         <div id="sankey_chart"></div>
@@ -106,15 +161,16 @@
           <h3>Branch details</h3>
           <div id="branch_title" class="detail-title">Click any branch in the Sankey chart.</div>
           <label class="branch-search">
-            Search company or role
+            Search company or titles
             <input id="branch_search_input" type="text" placeholder="e.g. Amazon, intern, data scientist" />
           </label>
+          <div id="branch_table_count" class="subtle-text"></div>
           <div class="branch-table-wrap">
             <table class="branch-table">
               <thead>
                 <tr>
                   <th>Company</th>
-                  <th>Role</th>
+                  <th>Titles seen</th>
                 </tr>
               </thead>
               <tbody id="branch_pairs_body">
@@ -129,6 +185,17 @@
         <div class="detail-right">
           <h3>Stage breakdown</h3>
           <div id="stage_chart"></div>
+        </div>
+      </section>
+
+      <section id="emails_panel" class="card emails-card" hidden>
+        <div class="section-head">
+          <h3>Processed Emails</h3>
+          <div id="emails_meta" class="subtle-text"></div>
+        </div>
+        <div class="subtle-text">Each row shows extraction (raw) next to final stored timeline result.</div>
+        <div id="emails_list" class="emails-list">
+          <div class="table-empty">Press "Show Emails" to inspect processed emails.</div>
         </div>
       </section>
     </main>

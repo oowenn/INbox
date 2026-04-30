@@ -58,6 +58,7 @@ class Settings:
     webapp_credentials_path: Path
     token_path: Path
     db_path: Path
+    truth_db_path: Path
     user_id: str
     max_messages: int
     gmail_query: str
@@ -77,6 +78,7 @@ class Settings:
         root = _project_root()
         token = os.environ.get("JOBINBOX_TOKEN", str(root / "token.json"))
         db = os.environ.get("JOBINBOX_DB_PATH", str(root / "jobinbox.db"))
+        truth_db = os.environ.get("JOBINBOX_TRUTH_DB_PATH", str(root / "truth_dataset.db"))
         user_id = (os.environ.get("JOBINBOX_USER_ID") or "local-user").strip() or "local-user"
         max_msg = int(os.environ.get("JOBINBOX_MAX_MESSAGES", "500"))
         query = os.environ.get("JOBINBOX_GMAIL_QUERY", "in:inbox")
@@ -102,6 +104,7 @@ class Settings:
             webapp_credentials_path=_resolve_webapp_credentials_path(root),
             token_path=Path(token),
             db_path=Path(db).expanduser(),
+            truth_db_path=Path(truth_db).expanduser(),
             user_id=user_id,
             max_messages=max_msg,
             gmail_query=query,

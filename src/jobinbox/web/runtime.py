@@ -9,13 +9,14 @@ from fastapi import HTTPException
 from jobinbox.config import Settings
 from jobinbox.extraction import OllamaEmailClassifier, OpenAIEmailClassifier
 from jobinbox.ingestion import GmailIngestion
-from jobinbox.storage import JobInboxStore
+from jobinbox.storage import JobInboxStore, TruthDatasetStore
 
 
 @dataclass(slots=True)
 class WebRuntime:
     settings: Settings
     store: JobInboxStore
+    truth_store: TruthDatasetStore
 
     def gmail_client(self) -> GmailIngestion:
         return GmailIngestion(
@@ -67,4 +68,5 @@ def build_runtime() -> WebRuntime:
     return WebRuntime(
         settings=settings,
         store=JobInboxStore(db_path=settings.db_path),
+        truth_store=TruthDatasetStore(db_path=settings.truth_db_path),
     )

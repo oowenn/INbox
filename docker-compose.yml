@@ -13,6 +13,7 @@ services:
       JOBINBOX_WEBAPP_CREDENTIALS: /app/host/webapp_credentials.json
       JOBINBOX_TOKEN: /app/host/token.json
       JOBINBOX_DB_PATH: ${JOBINBOX_DB_PATH:-/app/host/jobinbox.db}
+      JOBINBOX_TRUTH_DB_PATH: ${JOBINBOX_TRUTH_DB_PATH:-/app/host/truth_dataset.db}
       JOBINBOX_USER_ID: ${JOBINBOX_USER_ID:-local-user}
       JOBINBOX_MAX_MESSAGES: "500"
       JOBINBOX_GMAIL_QUERY: "in:inbox"

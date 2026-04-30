@@ -182,6 +182,19 @@ button.subtle-danger {
   font-weight: 700;
 }
 
+.timeline-scroll {
+  margin-top: 0.55rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.timeline-chart {
+  min-height: 260px;
+}
+
 .section-head {
   display: flex;
   align-items: center;
@@ -189,9 +202,20 @@ button.subtle-danger {
   gap: 0.5rem;
 }
 
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .section-head h2 {
   margin: 0;
   font-size: 1.05rem;
+}
+
+.section-head h3 {
+  margin: 0;
+  font-size: 1rem;
 }
 
 .subtle-text {
@@ -339,6 +363,176 @@ button.subtle-danger {
   text-align: right;
 }
 
+.emails-card {
+  margin-top: 0.75rem;
+}
+
+.emails-list {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  max-height: 360px;
+  overflow: auto;
+  padding: 0.55rem;
+}
+
+.email-item {
+  border: 1px solid #e1e6ee;
+  border-radius: 8px;
+  padding: 0.5rem 0.55rem;
+  margin-bottom: 0.45rem;
+  background: #fcfdff;
+}
+
+.email-item:last-child {
+  margin-bottom: 0;
+}
+
+.email-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.email-item-subject {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.email-item-stage {
+  display: inline-block;
+  padding: 0.12rem 0.42rem;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.email-item-meta,
+.email-item-result {
+  margin-top: 0.24rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.email-compare {
+  margin-top: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.result-col {
+  border: 1px solid #dbe1ea;
+  border-radius: 8px;
+  background: #f9fbff;
+  padding: 0.35rem 0.45rem;
+  min-height: 88px;
+}
+
+.result-col-title {
+  font-size: 0.77rem;
+  color: #4c5b70;
+  margin-bottom: 0.25rem;
+}
+
+.result-col-tags {
+  margin-bottom: 0.25rem;
+}
+
+.email-item-stage.tiny {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.36rem;
+}
+
+.result-col-body {
+  color: #2f3a4a;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.email-preview-wrap {
+  margin-top: 0.35rem;
+}
+
+.email-preview-wrap summary {
+  cursor: pointer;
+  color: #2f3a4a;
+  font-size: 0.82rem;
+}
+
+.email-preview {
+  margin: 0.3rem 0 0;
+  padding: 0.42rem 0.48rem;
+  border-radius: 6px;
+  background: #f4f6fa;
+  border: 1px solid #dce2ea;
+  color: #2a3240;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+}
+
+.failures-card .section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.failures-table-wrap {
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.failures-table .failures-when {
+  white-space: nowrap;
+  vertical-align: top;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.failures-table .failures-gid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.failures-table .failures-sub {
+  margin-top: 0.2rem;
+  font-size: 0.88rem;
+}
+
+.failures-table .failures-type {
+  vertical-align: top;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.failures-table .failures-detail {
+  vertical-align: top;
+  max-width: min(36rem, 48vw);
+}
+
+.failures-pre {
+  margin: 0;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12rem;
+  overflow: auto;
+}
+
 @media (max-width: 960px) {
   .control-grid {
     grid-template-columns: 1fr;
@@ -356,5 +550,9 @@ button.subtle-danger {
 @media (max-width: 640px) {
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .email-compare {
+    grid-template-columns: 1fr;
   }
 }

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 
 from jobinbox.web.models import (
+    ClassificationResult,
     DashboardStageCount,
     DashboardSummaryResponse,
     InboxMessage,
     InboxResponse,
+    MonthlyCount,
+    MonthlyCountsResponse,
     SankeyCompanyRolePair,
     SankeyLink,
     SankeyNode,
@@ -70,6 +74,17 @@ NODE_POSITION = {
     "Rejected after Unknown": (0.18, 0.36),
     "Pending after Unknown": (0.18, 0.66),
 }
+
+
+def _format_company_title_variants(labels: set[str], *, max_len: int = 140) -> str:
+    """Human-readable list of distinct titles seen for one company (dashboard only)."""
+    cleaned = sorted({lbl.strip() for lbl in labels if lbl and lbl.strip() and lbl.strip() != "(Unknown Role)"})
+    if not cleaned:
+        return "(Unknown Role)"
+    joined = " · ".join(cleaned)
+    if len(joined) <= max_len:
+        return joined
+    return joined[: max_len - 1] + "…"
 
 
 def _normalize_stage(stage: str) -> str:
@@ -156,6 +171,7 @@ def _edge_stack_order(source: str, target: str) -> int:
 
 
 def _to_inbox_message(row: dict[str, object]) -> InboxMessage:
+    extraction = _parse_stored_extraction(row.get("result_extraction_json"))
     result = None
     if row.get("result_application") is not None:
         result = {
@@ -177,9 +193,28 @@ def _to_inbox_message(row: dict[str, object]) -> InboxMessage:
         snippet=str(row.get("snippet") or ""),
         body=str(row.get("body") or ""),
         fetchedAt=str(row.get("fetchedAt") or "") or None,
+        extraction=extraction,
         result=result,
         resultUpdatedAt=str(row.get("resultUpdatedAt") or "") or None,
     )
+
+
+def _parse_stored_extraction(raw: object) -> ClassificationResult | None:
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        return ClassificationResult(**parsed)
+    except Exception:  # noqa: BLE001 - tolerate malformed legacy rows.
+        return None
 
 
 def list_cached_messages(runtime: WebRuntime, *, limit: int) -> InboxResponse:
@@ -208,35 +243,76 @@ def build_dashboard_summary(runtime: WebRuntime) -> DashboardSummaryResponse:
     )
 
 
+def build_monthly_counts(runtime: WebRuntime, *, limit_months: int = 48) -> MonthlyCountsResponse:
+    rows = runtime.store.list_cached_email_month_counts(
+        user_id=runtime.settings.user_id,
+        limit_months=limit_months,
+    )
+    return MonthlyCountsResponse(
+        months=[
+            MonthlyCount(month=str(r.get("month") or ""), count=int(r.get("count") or 0))
+            for r in rows
+            if r.get("month")
+        ]
+    )
+
+
 def build_sankey(runtime: WebRuntime) -> SankeyResponse:
     rows = runtime.store.list_user_classified_stage_events(user_id=runtime.settings.user_id)
     if not rows:
         return SankeyResponse(nodes=[SankeyNode(label="Received")], links=[], branch_pairs={}, total_pairs=0)
 
-    events_by_pair: dict[tuple[str, str], list[tuple[tuple[int, str, str], str]]] = defaultdict(list)
+    # One merged timeline per canonical_company so company-name drift across stages does not split the funnel.
+    # Branch detail "company" uses a representative display name; "role" column lists distinct titles seen.
+    events_by_company: dict[str, list[tuple[tuple[int, str, str], str, str, str]]] = defaultdict(list)
     for row in rows:
-        company = str(row.get("company") or "(Unknown Company)")
-        role = str(row.get("role") or "(Unknown Role)")
+        company_display = str(row.get("company") or "").strip()
+        if not company_display:
+            # Store layer should have filtered these, but never surface an unknown company in the dashboard.
+            continue
+        company_key = str(row.get("canonical_company") or "").strip().lower() or company_display.strip().lower()
+        role_raw = str(row.get("role") or "").strip()
+        canonical = str(row.get("canonical_role") or "").strip()
+        row_title = role_raw or canonical or "(Unknown Role)"
         stage = _normalize_stage(str(row.get("stage") or "Unknown"))
+        interview_date = str(row.get("interview_date") or "").strip()
+        # Dashboard rule: only count Interview as a reached stage when it has an actual scheduled date.
+        # This filters out generic recruiting "interview opportunities" and unscheduled invites.
+        if stage == "Interview" and not interview_date:
+            stage = "Unknown"
         sort_key = (
             int(row.get("internal_ts") or 0),
             str(row.get("fetched_at") or ""),
             str(row.get("result_updated_at") or ""),
         )
-        events_by_pair[(company, role)].append((sort_key, stage))
+        events_by_company[company_key].append((sort_key, stage, row_title, company_display))
 
     transition_counts: dict[tuple[str, str], int] = defaultdict(int)
     transition_pairs: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
-    contributing_pairs: set[tuple[str, str]] = set()
+    contributing_companies: set[str] = set()
 
-    for pair, events in events_by_pair.items():
-        ordered = sorted(events, key=lambda item: item[0])
+    for company_key, cells in events_by_company.items():
+        ordered = sorted(cells, key=lambda item: item[0])
         stage_path: list[str] = []
-        for _, stage in ordered:
+        company_variants: set[str] = set()
+        for _, stage, _, company_display in ordered:
+            if company_display:
+                company_variants.add(company_display)
+            if stage == "Unknown":
+                continue
             if not stage_path or stage_path[-1] != stage:
                 stage_path.append(stage)
         if not stage_path:
             continue
+
+        # Use a stable representative company display label for the branch table.
+        if not company_variants:
+            continue
+        company_label = sorted(company_variants, key=lambda s: (len(s), s.lower()))[0]
+
+        title_variants = {item[2] for item in ordered}
+        display_titles = _format_company_title_variants(title_variants)
+        pair = (company_label, display_titles)
 
         edges = _build_enforced_edges(stage_path)
 
@@ -251,7 +327,7 @@ def build_sankey(runtime: WebRuntime) -> SankeyResponse:
             transition_counts[edge] += 1
             transition_pairs[edge].add(pair)
         if seen_for_pair:
-            contributing_pairs.add(pair)
+            contributing_companies.add(company_key)
 
     labels = {"Received"}
     for source, target in transition_counts:
@@ -305,5 +381,5 @@ def build_sankey(runtime: WebRuntime) -> SankeyResponse:
         ],
         links=links,
         branch_pairs=branch_pairs,
-        total_pairs=len(contributing_pairs),
+        total_pairs=len(contributing_companies),
     )

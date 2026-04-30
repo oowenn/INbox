@@ -24,6 +24,10 @@ class InboxMessage(BaseModel):
     snippet: str = ""
     body: str = ""
     fetchedAt: str | None = None
+    extraction: ClassificationResult | None = Field(
+        default=None,
+        description="First-pass extractor output before history curation (if stored).",
+    )
     result: ClassificationResult | None = None
     resultUpdatedAt: str | None = None
 
@@ -45,6 +49,15 @@ class DashboardSummaryResponse(BaseModel):
     application_yes_total: int
     application_no_total: int
     stage_counts: list[DashboardStageCount]
+
+
+class MonthlyCount(BaseModel):
+    month: str = Field(description="YYYY-MM")
+    count: int
+
+
+class MonthlyCountsResponse(BaseModel):
+    months: list[MonthlyCount]
 
 
 class FetchMessagesRequest(BaseModel):
@@ -80,6 +93,11 @@ class ClassificationRequest(BaseModel):
 class BatchClassifyRequest(BaseModel):
     count: int = Field(default=100, ge=1, le=500)
     concurrency: int | None = Field(default=None, ge=1, le=16)
+    min_internal_ts_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional lower bound on Gmail internalDate epoch milliseconds for candidate selection.",
+    )
 
 
 class BatchClassifyResponse(BaseModel):
@@ -89,6 +107,58 @@ class BatchClassifyResponse(BaseModel):
     failed: int
     concurrency_used: int
     failed_ids: list[str]
+
+
+class ApplicationCycleRunRequest(BaseModel):
+    fetch_limit: int = Field(
+        default=12000,
+        ge=100,
+        le=100000,
+        description="Maximum number of Gmail ids to list for this cycle window.",
+    )
+    classify_batch_size: int = Field(
+        default=250,
+        ge=10,
+        le=500,
+        description="Batch size for each classify pass while draining cycle-window unprocessed emails.",
+    )
+    concurrency: int | None = Field(default=None, ge=1, le=16)
+    query: str = Field(
+        default="in:inbox",
+        description="Base Gmail query; cycle date filter is appended automatically.",
+    )
+
+
+class ApplicationCycleRunResponse(BaseModel):
+    run_id: int
+    status: str
+    cycle_start_date: str
+    cycle_query: str
+    listed: int
+    fetched_new: int
+    duplicates: int
+    fetch_failed: int
+    total_cached: int
+    classify_attempted: int
+    classify_processed: int
+    classify_failed: int
+    classify_yes: int
+    classify_no: int
+    classify_yes_missing_company: int
+    failed_ids: list[str]
+
+
+class ClassificationFailureRow(BaseModel):
+    id: int
+    gmail_id: str
+    error_type: str
+    error_message: str
+    created_at: str
+    subject: str | None = None
+
+
+class ClassificationFailuresResponse(BaseModel):
+    failures: list[ClassificationFailureRow]
 
 
 class SankeyNode(BaseModel):
@@ -113,4 +183,6 @@ class SankeyResponse(BaseModel):
     nodes: list[SankeyNode]
     links: list[SankeyLink]
     branch_pairs: dict[str, list[SankeyCompanyRolePair]]
-    total_pairs: int
+    total_pairs: int = Field(
+        description="Count of companies included in the Sankey (Received gate is per company; role field in pairs lists title variants).",
+    )

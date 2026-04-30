@@ -13,6 +13,7 @@ webapp_credentials.json
 token.json
 .env
 jobinbox.db
+truth_dataset.db
 
 # Legacy browser-demo local secrets (keep untracked if present)
 config.local.js

@@ -276,7 +276,6 @@ Where users can:
 - Understand performance
 - Optimize their job search strategy
 
-## Notes for next session
-- dynamic update for rows in table (after search)
-- normalize role titles (agentic system with data/context lookup)
-- reduce stage breakdown to final stages per role
+## Next Steps
+- dynamic row counter for table
+- last run was $0.10 for 400 emails, $1 mark would be at around 4k emails and 4 thousandth email in my inbox is almost 11 months ago for me so not bad.

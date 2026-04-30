@@ -1,16 +1,31 @@
 """Service-layer exports for web routes."""
 
-from jobinbox.web.services.analytics import build_dashboard_summary, build_sankey, list_cached_messages
-from jobinbox.web.services.classification import classify_batch, classify_message, iter_batch_events
+from jobinbox.web.services.analytics import (
+    build_dashboard_summary,
+    build_monthly_counts,
+    build_sankey,
+    list_cached_messages,
+)
+from jobinbox.web.services.classification import (
+    classify_batch,
+    classify_message,
+    iter_batch_events,
+    list_classification_failures,
+)
+from jobinbox.web.services.cycle import iter_application_cycle_events, run_application_cycle
 from jobinbox.web.services.messages import clear_results, fetch_messages, wipe_cached_messages
 
 __all__ = [
     "build_dashboard_summary",
+    "build_monthly_counts",
     "build_sankey",
     "list_cached_messages",
     "classify_batch",
     "classify_message",
     "iter_batch_events",
+    "list_classification_failures",
+    "iter_application_cycle_events",
+    "run_application_cycle",
     "clear_results",
     "fetch_messages",
     "wipe_cached_messages",

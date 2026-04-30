@@ -11,8 +11,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from jobinbox.web.models import (
+    ApplicationCycleRunRequest,
+    ApplicationCycleRunResponse,
     BatchClassifyRequest,
     BatchClassifyResponse,
+    ClassificationFailuresResponse,
     ClassificationRequest,
     ClassificationResult,
     ClearResultsResponse,
@@ -20,19 +23,24 @@ from jobinbox.web.models import (
     FetchMessagesRequest,
     FetchMessagesResponse,
     InboxResponse,
+    MonthlyCountsResponse,
     SankeyResponse,
     WipeCacheResponse,
 )
 from jobinbox.web.runtime import build_runtime
 from jobinbox.web.services import (
     build_dashboard_summary,
+    build_monthly_counts,
     build_sankey,
     classify_batch,
     classify_message,
     clear_results,
     fetch_messages,
+    iter_application_cycle_events,
     iter_batch_events,
     list_cached_messages,
+    list_classification_failures,
+    run_application_cycle,
     wipe_cached_messages,
 )
 
@@ -84,6 +92,14 @@ def sankey_analytics() -> SankeyResponse:
         raise HTTPException(status_code=500, detail=f"Sankey analytics error: {exc}") from exc
 
 
+@app.get("/api/analytics/monthly", response_model=MonthlyCountsResponse)
+def monthly_analytics(limit_months: int = Query(default=48, ge=1, le=240)) -> MonthlyCountsResponse:
+    try:
+        return build_monthly_counts(runtime, limit_months=limit_months)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Monthly analytics error: {exc}") from exc
+
+
 @app.get("/api/messages", response_model=InboxResponse)
 def list_messages(limit: int = Query(default=runtime.settings.max_messages, ge=1, le=500)) -> InboxResponse:
     return list_cached_messages(runtime, limit=limit)
@@ -109,6 +125,14 @@ def classify_message_route(payload: ClassificationRequest) -> ClassificationResu
     return classify_message(runtime, payload)
 
 
+@app.get("/api/classification/failures", response_model=ClassificationFailuresResponse)
+def classification_failures(
+    limit: int = Query(default=200, ge=1, le=500),
+    gmail_id: str | None = Query(default=None, description="Optional filter to one message id."),
+) -> ClassificationFailuresResponse:
+    return list_classification_failures(runtime, limit=limit, gmail_id=gmail_id)
+
+
 @app.post("/api/classify/batch", response_model=BatchClassifyResponse)
 def classify_messages_batch(payload: BatchClassifyRequest) -> BatchClassifyResponse:
     return classify_batch(runtime, payload)
@@ -118,6 +142,28 @@ def classify_messages_batch(payload: BatchClassifyRequest) -> BatchClassifyRespo
 def classify_messages_batch_stream(payload: BatchClassifyRequest) -> StreamingResponse:
     def event_bytes() -> Iterator[bytes]:
         for event in iter_batch_events(runtime, payload):
+            yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        event_bytes(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/cycle/run", response_model=ApplicationCycleRunResponse)
+def run_application_cycle_route(payload: ApplicationCycleRunRequest) -> ApplicationCycleRunResponse:
+    return run_application_cycle(runtime, payload)
+
+
+@app.post("/api/cycle/run/stream")
+def run_application_cycle_stream_route(payload: ApplicationCycleRunRequest) -> StreamingResponse:
+    def event_bytes() -> Iterator[bytes]:
+        for event in iter_application_cycle_events(runtime, payload):
             yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
 
     return StreamingResponse(
