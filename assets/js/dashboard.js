@@ -1,30 +1,39 @@
 import {
-  clearResults,
-  fetchNewestMessages,
-  getClassificationFailures,
+  getCycleEstimate,
   getDashboardSummary,
   getMonthlyCounts,
-  getMessages,
   getSankey,
-  streamApplicationCycleRun,
-  streamProcessBatch,
-  wipeCache,
+  invalidateCycleGmailCount,
+  streamCycleAnalyze,
+  streamCycleCount,
+  streamCycleLoad,
 } from "./api.js";
 import { renderSankeyChart } from "./sankey.js";
 
+const MIN_CYCLE_YEAR = 2000;
+
+function currentCycleStartYear() {
+  const now = new Date();
+  return now.getMonth() + 1 >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
 const state = {
-  pullBusy: false,
-  processBusy: false,
   cycleBusy: false,
-  mutateBusy: false,
+  cycleScanBusy: false,
   summary: null,
   sankey: null,
+  cycleReadyToAnalyze: 0,
+  cycleLoadedYear: null,
+  cycleEstimatedCostUsd: 0,
+  cycleEstimateYear: null,
+  cycleNeedsExactScan: true,
+  cycleExactCount: null,
+  cycleCachedTotal: 0,
+  cycleNotAnalyzedTotal: 0,
+  selectedCycleStartYear: currentCycleStartYear(),
   selectedBranchId: "",
   selectedBranchPairs: [],
   branchSearchTerm: "",
-  showEmails: false,
-  emailsLoading: false,
-  classifiedMessages: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +47,223 @@ const STAGE_COLORS = {
   Rejection: "#e36363",
   Unknown: "#b9b4d8",
 };
+
+function cycleYearLabel(year) {
+  if (!Number.isFinite(year)) return "";
+  const endYear = year + 1;
+  return `${year}\u2013${endYear}`;
+}
+
+function isAllCyclesSelected() {
+  return state.selectedCycleStartYear == null;
+}
+
+function selectedCycleStartYear() {
+  return isAllCyclesSelected() ? undefined : state.selectedCycleStartYear;
+}
+
+function refreshCyclePicker() {
+  const prevBtn = $("cycle_prev_btn");
+  const nextBtn = $("cycle_next_btn");
+  const allBtn = $("cycle_all_btn");
+  const label = $("cycle_label");
+  const current = currentCycleStartYear();
+  const selected = state.selectedCycleStartYear;
+
+  if (label) {
+    if (selected == null) {
+      label.textContent = "All Cycles";
+    } else {
+      const suffix = selected === current ? " (current cycle)" : "";
+      label.textContent = `${cycleYearLabel(selected)}${suffix}`;
+    }
+  }
+  const navBusy = state.cycleBusy || state.cycleScanBusy;
+  if (prevBtn) prevBtn.disabled = navBusy || selected == null || selected <= MIN_CYCLE_YEAR;
+  if (nextBtn) nextBtn.disabled = navBusy || selected == null || selected >= current;
+  if (allBtn) {
+    allBtn.textContent = selected == null ? "Current Cycle" : "All Cycles";
+    allBtn.disabled = navBusy;
+  }
+}
+
+function setCycleResultSummary(text = "") {
+  const el = $("cycle_result_summary");
+  if (el) el.textContent = text;
+}
+
+async function selectCycleStartYear(nextYearOrNull) {
+  const current = currentCycleStartYear();
+  const normalized =
+    nextYearOrNull == null
+      ? null
+      : Math.max(MIN_CYCLE_YEAR, Math.min(current, Number(nextYearOrNull) || current));
+  if (normalized === state.selectedCycleStartYear) return;
+  state.selectedCycleStartYear = normalized;
+  state.cycleReadyToAnalyze = 0;
+  state.cycleLoadedYear = null;
+  state.cycleEstimatedCostUsd = 0;
+  state.cycleEstimateYear = null;
+  state.cycleNeedsExactScan = true;
+  state.cycleExactCount = null;
+  state.cycleCachedTotal = 0;
+  state.cycleNotAnalyzedTotal = 0;
+  setCycleResultSummary("");
+  refreshCyclePicker();
+  updateAnalyzeButtonState();
+  await refreshDashboard({ keepStatus: false });
+  const timelineBody = $("timeline_body");
+  if (timelineBody && !timelineBody.hasAttribute("hidden")) {
+    const status = $("timeline_status");
+    if (status) status.textContent = "Loading...";
+    try {
+      const payload = await getMonthlyCounts({
+        limitMonths: 60,
+        cycleStartYear: selectedCycleStartYear(),
+      });
+      await renderTimelineChart(payload?.months || []);
+    } catch (err) {
+      if (status) status.textContent = err.message || String(err);
+    }
+  }
+  await refreshCycleEstimate();
+}
+
+function formatCycleStartDate(isoDate) {
+  const raw = String(isoDate || "").trim();
+  const parts = raw.split("-");
+  if (parts.length !== 3) return raw;
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return raw;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+function formatUsd(amount) {
+  const value = Number(amount || 0);
+  if (!Number.isFinite(value) || value <= 0) return "$0.00";
+  if (value < 0.01) return "<$0.01";
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function updateAnalyzeButtonState() {
+  const analyzeBtn = $("cycle_analyze_btn");
+  const estimateBtn = $("cycle_estimate_btn");
+  const selectedYear = selectedCycleStartYear();
+  const hasCycle = selectedYear != null;
+  const busy = state.cycleBusy || state.cycleScanBusy;
+  const currentCycle = currentCycleStartYear();
+  const isCurrent = hasCycle && selectedYear === currentCycle;
+  const estimateIsFresh =
+    hasCycle &&
+    state.cycleEstimateYear === selectedYear &&
+    !state.cycleNeedsExactScan;
+  const noPendingWork = estimateIsFresh && Number(state.cycleNotAnalyzedTotal || 0) <= 0;
+
+  if (estimateBtn) {
+    // Historical cycles are stable; keep Estimate enabled for current cycle so users can refresh as new mail arrives.
+    estimateBtn.disabled = busy || !hasCycle || (noPendingWork && !isCurrent);
+  }
+  if (analyzeBtn) {
+    analyzeBtn.disabled = busy || !hasCycle || noPendingWork;
+  }
+}
+
+function applyCycleEstimateSummary(est) {
+  const ready = Number(est.ready_to_analyze ?? 0);
+  const cached = Number(est.cached_total ?? 0);
+  const notAnalyzed = Number(est.not_analyzed_total ?? 0);
+  const estimatedCost = Number(est.estimated_cost_usd ?? 0);
+  const exactRaw = est.gmail_exact_list_count;
+  const exact =
+    exactRaw != null && Number.isFinite(Number(exactRaw)) ? Math.max(0, Number(exactRaw)) : null;
+  const selectedYear = selectedCycleStartYear();
+  const analyzed = Number(state.summary?.classified_total ?? 0);
+  const foundCount = exact != null ? exact : Math.max(cached, analyzed + notAnalyzed);
+
+  state.cycleReadyToAnalyze = ready;
+  state.cycleEstimatedCostUsd = estimatedCost;
+  state.cycleLoadedYear = null;
+  state.cycleEstimateYear = selectedYear ?? null;
+  state.cycleNeedsExactScan = Boolean(est.needs_exact_list_scan);
+  state.cycleExactCount = exact;
+  state.cycleCachedTotal = cached;
+  state.cycleNotAnalyzedTotal = Math.max(0, notAnalyzed);
+  updateAnalyzeButtonState();
+
+  if (state.cycleNeedsExactScan) {
+    setCycleResultSummary("Estimate Cost to find cycle email count and estimated analysis cost.");
+    return;
+  }
+
+  if (selectedYear === currentCycleStartYear() && analyzed > 0) {
+    setCycleResultSummary(
+      `Analyzed ${analyzed.toLocaleString()} emails. Found ${notAnalyzed.toLocaleString()} new · Est. cost ${formatUsd(estimatedCost)}`
+    );
+    return;
+  }
+
+  if (foundCount > 0 || cached > 0 || notAnalyzed > 0) {
+    setCycleResultSummary(
+      `Found ${foundCount.toLocaleString()} emails in this cycle · Est. up to ${formatUsd(estimatedCost)} to analyze`
+    );
+    return;
+  }
+
+  setCycleResultSummary("Estimate Cost to find cycle email count and estimated analysis cost.");
+}
+
+async function refreshCycleEstimate() {
+  if (isAllCyclesSelected()) {
+    state.cycleReadyToAnalyze = 0;
+    state.cycleEstimatedCostUsd = 0;
+    state.cycleEstimateYear = null;
+    state.cycleNeedsExactScan = true;
+    state.cycleExactCount = null;
+    state.cycleCachedTotal = 0;
+    state.cycleNotAnalyzedTotal = 0;
+    setCycleResultSummary("");
+    updateAnalyzeButtonState();
+    return;
+  }
+  const targetYear = selectedCycleStartYear();
+  if (targetYear == null) return;
+
+  try {
+    const est = await getCycleEstimate({ cycleStartYear: targetYear, query: "in:inbox" });
+    if (state.selectedCycleStartYear !== targetYear) return;
+    applyCycleEstimateSummary(est);
+  } catch (err) {
+    const up = Number(state.summary?.unprocessed_total ?? 0);
+    const cached = Number(state.summary?.cached_total ?? 0);
+    state.cycleReadyToAnalyze = up;
+    state.cycleEstimatedCostUsd = 0;
+    state.cycleEstimateYear = null;
+    state.cycleNeedsExactScan = true;
+    state.cycleExactCount = null;
+    state.cycleCachedTotal = cached;
+    state.cycleNotAnalyzedTotal = Math.max(0, up);
+    updateAnalyzeButtonState();
+    setCycleResultSummary(
+      err?.message
+        ? `${err.message}`
+        : cached > 0 || up > 0
+          ? `Found ${Math.max(cached, up).toLocaleString()} emails in this cycle · Est. up to ${formatUsd(state.cycleEstimatedCostUsd)} to analyze`
+          : "Estimate Cost to find cycle email count and estimated analysis cost."
+    );
+  }
+}
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -105,37 +331,45 @@ function expandMonthlySeries(rows) {
   const data = Array.isArray(rows) ? rows : [];
   if (!data.length) return null;
 
-  const countsByMonth = new Map();
+  const totalsByMonth = new Map();
+  const receivedByMonth = new Map();
   for (const row of data) {
     const key = String(row.month || "").trim();
     if (!key) continue;
-    countsByMonth.set(key, Number(row.count || 0));
+    totalsByMonth.set(key, Number(row.count || 0));
+    receivedByMonth.set(key, Number(row.received_count || 0));
   }
-  const monthKeys = [...countsByMonth.keys()].sort();
+  const monthKeys = [...totalsByMonth.keys()].sort();
   if (!monthKeys.length) return null;
 
   const firstReal = parseMonthStart(monthKeys[0]);
   const lastReal = parseMonthStart(monthKeys[monthKeys.length - 1]);
   if (!firstReal || !lastReal) return null;
 
-  const start = addMonths(firstReal, -1);
-  const end = addMonths(lastReal, 1);
   const months = [];
   const x = [];
-  const y = [];
+  const totalY = [];
+  const receivedY = [];
 
-  for (let current = start; current <= end; current = addMonths(current, 1)) {
-    const key = monthKey(current);
+  for (const key of monthKeys) {
+    const dt = parseMonthStart(key);
+    if (!dt) continue;
+    const total = Number(totalsByMonth.get(key) || 0);
+    const received = Number(receivedByMonth.get(key) || 0);
+    // Drop total=0 months entirely (and we no longer pad with synthetic 0 months).
+    if (!Number.isFinite(total) || total <= 0) continue;
     months.push(key);
-    x.push(current.toISOString());
-    y.push(Number(countsByMonth.get(key) || 0));
+    x.push(dt.toISOString());
+    totalY.push(total);
+    // Drop received=0 points by rendering them as null.
+    receivedY.push(Number.isFinite(received) && received > 0 ? received : null);
   }
 
   return {
     months,
     x,
-    y,
-    firstRealMonth: monthKey(firstReal),
+    totalY,
+    receivedY,
   };
 }
 
@@ -158,21 +392,33 @@ async function renderTimelineChart(rows) {
   }
 
   const monthWidth = 72;
-  const paddedMonthCount = series.months.length;
-  const minWidth = Math.max(scroll.clientWidth + monthWidth * 2, paddedMonthCount * monthWidth);
-  const firstRealIndex = Math.max(0, series.months.indexOf(series.firstRealMonth));
-  status.textContent = `Loaded ${paddedMonthCount - 2} months of data with one padded month on each side.`;
+  const monthCount = series.months.length;
+  const minWidth = Math.max(scroll.clientWidth, monthCount * monthWidth);
+  status.textContent = `Loaded ${monthCount} months (total + Received).`;
 
   const monthLabels = series.x.map(formatMonthTick);
-  const trace = {
+  const totalTrace = {
     type: "scatter",
     mode: "lines+markers",
     x: series.x,
-    y: series.y,
+    y: series.totalY,
     text: monthLabels,
     line: { color: "#577aa6", width: 3, shape: "linear" },
     marker: { color: "#577aa6", size: 7 },
-    hovertemplate: "%{text}<br>%{y} emails<extra></extra>",
+    name: "Total emails",
+    hovertemplate: "%{text}<br>%{y} total emails<extra></extra>",
+  };
+
+  const receivedTrace = {
+    type: "scatter",
+    mode: "lines+markers",
+    x: series.x,
+    y: series.receivedY,
+    text: monthLabels,
+    line: { color: "#84c9cc", width: 3, shape: "linear" },
+    marker: { color: "#84c9cc", size: 7 },
+    name: "Received",
+    hovertemplate: "%{text}<br>%{y} Received<extra></extra>",
   };
 
   const layout = {
@@ -200,11 +446,15 @@ async function renderTimelineChart(rows) {
       fixedrange: true,
       title: { text: "Emails" },
     },
-    showlegend: false,
+    showlegend: true,
+    legend: { orientation: "h", x: 0, y: 1.18, yanchor: "top" },
   };
 
-  await window.Plotly.react(chart, [trace], layout, { displayModeBar: false, responsive: false });
-  scroll.scrollLeft = Math.max(0, firstRealIndex * monthWidth);
+  await window.Plotly.react(chart, [totalTrace, receivedTrace], layout, {
+    displayModeBar: false,
+    responsive: false,
+  });
+  scroll.scrollLeft = 0;
 }
 
 async function toggleTimeline() {
@@ -226,7 +476,10 @@ async function toggleTimeline() {
   const status = $("timeline_status");
   if (status) status.textContent = "Loading...";
   try {
-    const payload = await getMonthlyCounts({ limitMonths: 60 });
+    const payload = await getMonthlyCounts({
+      limitMonths: 60,
+      cycleStartYear: selectedCycleStartYear(),
+    });
     renderTimelineChart(payload?.months || []);
   } catch (err) {
     if (status) status.textContent = err.message || String(err);
@@ -244,156 +497,6 @@ function formatMessageDate(message) {
   }
   const dateHeader = String(message?.date || "").trim();
   return dateHeader || "Unknown date";
-}
-
-function updateShowEmailsButton() {
-  const btn = $("show_emails_btn");
-  if (!btn) return;
-  if (state.emailsLoading) {
-    btn.textContent = "Loading...";
-    btn.disabled = true;
-    return;
-  }
-  btn.disabled = false;
-  btn.textContent = state.showEmails ? "Hide Emails" : "Show Emails";
-}
-
-function formatClassificationBlock(title, result, { tiny = false } = {}) {
-  if (!result) {
-    return (
-      `<div class="result-col">` +
-      `<div class="result-col-title">${escapeHtml(title)}</div>` +
-      `<div class="result-col-body muted">(none)</div>` +
-      `</div>`
-    );
-  }
-  const application = String(result.application || "no");
-  const stage = String(result.stage || "Unknown");
-  const company = String(result.company || "").trim() || "(Unknown Company)";
-  const role = String(result.role || "").trim() || "(Unknown Role)";
-  const interviewDate = String(result.interview_date || "").trim();
-  return (
-    `<div class="result-col">` +
-    `<div class="result-col-title">${escapeHtml(title)}</div>` +
-    `<div class="result-col-tags">` +
-    `<span class="email-item-stage ${tiny ? "tiny" : ""}" style="background: ${stageColor(stage)};">${escapeHtml(
-      `${application} · ${stage}`
-    )}</span>` +
-    `</div>` +
-    `<div class="result-col-body">` +
-    `company: ${escapeHtml(company)}<br/>` +
-    `role: ${escapeHtml(role)}${interviewDate ? `<br/>interview_date: ${escapeHtml(interviewDate)}` : ""}` +
-    `</div>` +
-    `</div>`
-  );
-}
-
-function renderEmailsList() {
-  const list = $("emails_list");
-  const meta = $("emails_meta");
-  if (!list) return;
-
-  const items = Array.isArray(state.classifiedMessages) ? state.classifiedMessages : [];
-  if (meta) {
-    const noun = items.length === 1 ? "email" : "emails";
-    meta.textContent = `Showing ${items.length} processed ${noun} (newest first).`;
-  }
-
-  if (!items.length) {
-    list.innerHTML = '<div class="table-empty">No processed emails found yet.</div>';
-    return;
-  }
-
-  list.innerHTML = items
-    .map((message, idx) => {
-      const result = message.result || {};
-      const extraction = message.extraction || null;
-      const stage = String(result.stage || "Unknown");
-      const stageTag = `${result.application || "no"} · ${stage}`;
-      const subject = String(message.subject || "").trim() || "(No subject)";
-      const sender = String(message.sender || "").trim() || "(Unknown sender)";
-      const dateText = formatMessageDate(message);
-      const body = String(message.body || "").trim();
-      const snippet = String(message.snippet || "").trim();
-      const fullText = body || snippet;
-      const hasFinal = Boolean(message.result);
-      const topTag = hasFinal ? stageTag : "no final result";
-
-      return (
-        `<article class="email-item">` +
-        `<div class="email-item-head">` +
-        `<div class="email-item-subject">#${idx + 1} ${escapeHtml(subject)}</div>` +
-        `<span class="email-item-stage" style="background: ${hasFinal ? stageColor(stage) : stageColor("Unknown")};">${escapeHtml(
-          topTag
-        )}</span>` +
-        `</div>` +
-        `<div class="email-item-meta">${escapeHtml(dateText)} · ${escapeHtml(sender)}</div>` +
-        `<div class="email-compare">` +
-        formatClassificationBlock("Extraction (raw)", extraction, { tiny: true }) +
-        formatClassificationBlock("Final (stored)", message.result, { tiny: true }) +
-        `</div>` +
-        (fullText
-          ? `<details class="email-preview-wrap"><summary>Message body</summary><pre class="email-preview">${escapeHtml(fullText)}</pre></details>`
-          : "") +
-        `</article>`
-      );
-    })
-    .join("");
-}
-
-async function loadClassifiedEmails({ silent = false } = {}) {
-  if (state.emailsLoading) return;
-  state.emailsLoading = true;
-  updateShowEmailsButton();
-  const list = $("emails_list");
-  const meta = $("emails_meta");
-  if (list && !silent) {
-    list.innerHTML = '<div class="table-empty">Loading classified emails...</div>';
-  }
-  if (meta && !silent) {
-    meta.textContent = "Loading...";
-  }
-
-  try {
-    const payload = await getMessages({ limit: 500 });
-    const messages = Array.isArray(payload?.messages) ? payload.messages : [];
-    state.classifiedMessages = messages.filter(
-      (message) => message && (message.result || message.extraction)
-    );
-    renderEmailsList();
-    if (!silent) {
-      const noun = state.classifiedMessages.length === 1 ? "email" : "emails";
-      setStatus(`Loaded ${state.classifiedMessages.length} processed ${noun}.`);
-    }
-  } catch (err) {
-    const errorText = err?.message || String(err);
-    if (list) list.innerHTML = `<div class="table-empty">${escapeHtml(errorText)}</div>`;
-    if (meta) meta.textContent = "Failed to load.";
-    if (!silent) {
-      setStatus(errorText, { error: true });
-    }
-  } finally {
-    state.emailsLoading = false;
-    updateShowEmailsButton();
-  }
-}
-
-async function handleShowEmailsToggle() {
-  hideAllConfirmRows();
-  const panel = $("emails_panel");
-  if (!panel) return;
-
-  if (state.showEmails) {
-    state.showEmails = false;
-    panel.hidden = true;
-    updateShowEmailsButton();
-    return;
-  }
-
-  state.showEmails = true;
-  panel.hidden = false;
-  updateShowEmailsButton();
-  await loadClassifiedEmails({ silent: false });
 }
 
 function sankeyDerivedStageCounts() {
@@ -454,36 +557,19 @@ function setSankeyStatus(text, isError = false) {
 }
 
 function setControlsBusy() {
-  const busy = state.pullBusy || state.processBusy || state.cycleBusy || state.mutateBusy;
+  const busy = state.cycleBusy || state.cycleScanBusy;
   const ids = [
-    "pull_btn",
-    "process_btn",
-    "cycle_run_btn",
-    "clear_results_btn",
-    "wipe_cache_btn",
-    "refresh_btn",
-    "clear_results_confirm_btn",
-    "clear_results_cancel_btn",
-    "wipe_cache_confirm_btn",
-    "wipe_cache_cancel_btn",
+    "cycle_estimate_btn",
+    "cycle_prev_btn",
+    "cycle_next_btn",
+    "cycle_all_btn",
   ];
   for (const id of ids) {
     const el = $(id);
     if (el) el.disabled = busy;
   }
-
-  const inputIds = [
-    "query_input",
-    "pull_count_input",
-    "process_count_input",
-    "process_concurrency_input",
-    "cycle_fetch_limit_input",
-    "cycle_batch_size_input",
-  ];
-  for (const id of inputIds) {
-    const el = $(id);
-    if (el) el.disabled = busy;
-  }
+  refreshCyclePicker();
+  updateAnalyzeButtonState();
 }
 
 function setConfirmVisible(id, visible) {
@@ -685,19 +771,20 @@ async function renderSankey(payload) {
 }
 
 async function refreshDashboard({ keepStatus = false } = {}) {
+  const cycleStartYear = selectedCycleStartYear();
   if (!keepStatus) {
     setStatus("Refreshing dashboard...", { spinner: true });
   }
   setSankeyStatus("Loading sankey...");
   try {
-    const [summary, sankey] = await Promise.all([getDashboardSummary(), getSankey()]);
+    const [summary, sankey] = await Promise.all([
+      getDashboardSummary({ cycleStartYear }),
+      getSankey({ cycleStartYear }),
+    ]);
     // Update sankey state first so stage chart derivation can include Pending immediately.
     state.sankey = sankey;
     renderSummary(summary);
     await renderSankey(sankey);
-    if (state.showEmails) {
-      await loadClassifiedEmails({ silent: true });
-    }
     if (!keepStatus) {
       setStatus("Dashboard refreshed.");
     }
@@ -707,187 +794,149 @@ async function refreshDashboard({ keepStatus = false } = {}) {
   }
 }
 
-async function handlePull() {
+async function handleEstimateCost() {
   hideAllConfirmRows();
-  const count = clampInt($("pull_count_input").value, 100, 1, 500);
-  $("pull_count_input").value = String(count);
-  const query = "in:inbox";
-
-  state.pullBusy = true;
-  setControlsBusy();
-  setStatus(`Pulling ${count} newest emails...`, { spinner: true });
-  try {
-    const payload = await fetchNewestMessages({ count, query });
-    await refreshDashboard({ keepStatus: true });
-    setStatus(
-      `Pull complete: ${payload.fetched_new} new, ${payload.duplicates} duplicates skipped. Total cached: ${payload.total_cached}.`
-    );
-  } catch (err) {
-    setStatus(err.message || String(err), { error: true });
-  } finally {
-    state.pullBusy = false;
-    setControlsBusy();
+  if (isAllCyclesSelected()) {
+    setStatus("Choose a specific cycle first.");
+    return;
   }
-}
-
-async function handleProcess() {
-  hideAllConfirmRows();
-  const count = clampInt($("process_count_input").value, 100, 1, 500);
-  $("process_count_input").value = String(count);
-
-  state.processBusy = true;
+  const cycleStartYear = selectedCycleStartYear();
+  if (cycleStartYear == null) return;
+  state.cycleScanBusy = true;
   setControlsBusy();
-  setStatus("Starting processing batch...", { spinner: true });
-
-  let donePayload = null;
+  setStatus("Estimating cycle cost…", { spinner: true });
   try {
-    donePayload = await streamProcessBatch({
-      count,
+    await invalidateCycleGmailCount(cycleStartYear);
+    await streamCycleCount({
+      cycleStartYear,
+      query: "in:inbox",
       onEvent: (event) => {
-        if (event.type === "start") {
-          const attempted = event.attempted ?? 0;
-          if (!attempted) {
-            setStatus("No unprocessed cached emails found.");
-            return;
-          }
-          setStatus(`Processing: 0/${attempted}`, { spinner: true });
-        } else if (event.type === "progress") {
-          const base = `Processing: ${event.finished ?? 0}/${event.total ?? 0}`;
-          if (event.ok === false && event.error) {
-            const snippet = String(event.error.message || "").slice(0, 120);
-            setStatus(`${base} — last error: ${event.error.type || "?"} ${snippet}`, { spinner: true });
-          } else {
-            setStatus(base, { spinner: true });
-          }
-        } else if (event.type === "done") {
-          donePayload = event;
+        if (event?.type === "count_progress") {
+          const counted = Number(event.counted ?? 0);
+          setCycleResultSummary(`Counting… ${counted.toLocaleString()} emails found so far`);
         }
       },
     });
-
-    await refreshDashboard({ keepStatus: true });
-
-    if (!donePayload || !donePayload.attempted) {
-      setStatus("No unprocessed cached emails found.");
-      return;
-    }
-
-    const failNote = donePayload.failed
-      ? ` ${donePayload.failed} failed (${donePayload.failed_ids.slice(0, 3).join(", ")}${donePayload.failed > 3 ? ", ..." : ""}). Errors are stored in the DB and listed under Classification failures.`
-      : "";
-    setStatus(
-      `Processing complete: ${donePayload.processed}/${donePayload.attempted} with concurrency ${donePayload.concurrency_used}.${failNote}`
-    );
+    if (state.selectedCycleStartYear !== cycleStartYear) return;
+    await refreshCycleEstimate();
+    setStatus("Cost estimate updated.", {});
   } catch (err) {
     setStatus(err.message || String(err), { error: true });
   } finally {
-    state.processBusy = false;
+    state.cycleScanBusy = false;
     setControlsBusy();
   }
 }
 
-async function handleCycleRun() {
+async function handleCycleAnalyze() {
   hideAllConfirmRows();
-  const fetchInput = $("cycle_fetch_limit_input");
-  const batchInput = $("cycle_batch_size_input");
-  const fetchLimit = clampInt(fetchInput?.value, 12000, 100, 100000);
-  const classifyBatchSize = clampInt(batchInput?.value, 250, 10, 500);
-  if (fetchInput) fetchInput.value = String(fetchLimit);
-  if (batchInput) batchInput.value = String(classifyBatchSize);
+  if (isAllCyclesSelected()) {
+    setStatus("Choose a specific cycle before running analysis.");
+    return;
+  }
+  const cycleStartYear = selectedCycleStartYear();
 
   state.cycleBusy = true;
   setControlsBusy();
-  setStatus("Starting application-cycle run...", { spinner: true });
-
-  let donePayload = null;
   try {
-    donePayload = await streamApplicationCycleRun({
-      fetchLimit,
-      classifyBatchSize,
+    setStatus("Loading emails for this cycle…", { spinner: true });
+    const loadPayload = await streamCycleLoad({
+      cycleStartYear,
       query: "in:inbox",
       onEvent: (event) => {
-        if (event.type === "run_start") {
+        if (event.type === "load_start") {
+          const cycleStart = formatCycleStartDate(event.cycle_start_date);
+          setStatus(`Loading emails since ${cycleStart}…`, { spinner: true });
+          return;
+        }
+        if (event.type === "load_fetch_start") {
           setStatus(
-            `Cycle run #${event.run_id}: scanning since ${event.cycle_start_date} (limit ${event.fetch_limit})...`,
+            `Found ${event.listed} emails in this cycle. Loading ${event.new_candidates} new…`,
             { spinner: true }
           );
           return;
         }
-        if (event.type === "fetch_start") {
-          setStatus(
-            `Cycle run #${event.run_id}: ${event.new_candidates} new candidates (${event.duplicates} already cached).`,
-            { spinner: true }
-          );
+        if (event.type === "load_fetch_progress") {
+          setStatus(`Loaded ${event.fetched_new}/${event.total} new emails…`, { spinner: true });
           return;
         }
-        if (event.type === "fetch_progress") {
-          setStatus(
-            `Cycle run #${event.run_id}: fetched ${event.fetched_new}/${event.total} new (${event.failed} fetch failures).`,
-            { spinner: true }
-          );
-          return;
-        }
-        if (event.type === "fetch_done") {
-          setStatus(
-            `Cycle run #${event.run_id}: fetch complete (${event.fetched_new} new, ${event.duplicates} duplicates). Classifying...`,
-            { spinner: true }
-          );
-          return;
-        }
-        if (event.type === "classify_batch_start") {
-          const attempted = Number(event.attempted || 0);
-          if (!attempted) {
-            setStatus(`Cycle run #${event.run_id}: no more unprocessed cycle emails.`);
-            return;
-          }
-          setStatus(
-            `Cycle run #${event.run_id}: classifying batch ${event.batch_index} (${attempted} emails)...`,
-            { spinner: true }
-          );
-          return;
-        }
-        if (event.type === "classify_progress") {
-          const base =
-            `Cycle run #${event.run_id}: batch ${event.batch_index} ` +
-            `${event.finished}/${event.total} ` +
-            `(yes ${event.classify_yes_total}, no ${event.classify_no_total}, missing company ${event.classify_yes_missing_company_total})`;
-          if (event.ok === false && event.error) {
-            const snippet = String(event.error.message || "").slice(0, 120);
-            setStatus(`${base} — last error: ${event.error.type || "?"} ${snippet}`, { spinner: true });
+      },
+    });
+
+    if (!loadPayload) {
+      setStatus("Load finished without a completion payload.", { error: true });
+      return;
+    }
+
+    await refreshDashboard({ keepStatus: true });
+    await refreshCycleEstimate();
+
+    setStatus("Analyzing emails…", { spinner: true });
+    const analyzeDone = await streamCycleAnalyze({
+      cycleStartYear,
+      query: "in:inbox",
+      onEvent: (event) => {
+        if (event.type === "analyze_start") {
+          const ready = Number(event.ready_to_analyze || 0);
+          if (ready <= 0) {
+            setStatus("No emails are waiting for analysis in this cycle.");
           } else {
-            setStatus(base, { spinner: true });
+            setStatus(`Analyzing up to ${ready} emails…`, { spinner: true });
           }
           return;
         }
-        if (event.type === "classify_batch_done") {
-          setStatus(
-            `Cycle run #${event.run_id}: batch ${event.batch_index} done. Totals processed ${event.classify_processed_total}/${event.classify_attempted_total}.`,
-            { spinner: true }
-          );
+        if (event.type === "analyze_batch_start") {
+          const attempted = Number(event.attempted || 0);
+          if (attempted > 0) {
+            setStatus(`Analyzing batch ${event.batch_index} (${attempted} emails)…`, { spinner: true });
+          }
           return;
         }
-        if (event.type === "done") {
-          donePayload = event;
+        if (event.type === "analyze_progress") {
+          setStatus(`Analyzing batch ${event.batch_index}: ${event.finished}/${event.total}`, {
+            spinner: true,
+          });
+          return;
         }
       },
     });
 
     await refreshDashboard({ keepStatus: true });
 
-    if (!donePayload) {
-      setStatus("Cycle run ended without a completion payload.", { error: true });
+    if (!analyzeDone) {
+      setStatus("Analysis finished without a completion payload.", { error: true });
       return;
     }
 
-    const failNote = donePayload.classify_failed
-      ? ` ${donePayload.classify_failed} classification failures recorded (${donePayload.failed_ids.slice(0, 3).join(", ")}${donePayload.classify_failed > 3 ? ", ..." : ""}).`
-      : "";
-    const fetchFailNote = donePayload.fetch_failed
-      ? ` ${donePayload.fetch_failed} fetch failures were logged to classification failures.`
-      : "";
-    setStatus(
-      `Cycle run #${donePayload.run_id} ${donePayload.status}: ${donePayload.classify_processed}/${donePayload.classify_attempted} classified, yes=${donePayload.classify_yes}, no=${donePayload.classify_no}, missing-company=${donePayload.classify_yes_missing_company}.${fetchFailNote}${failNote}`
-    );
+    const listed = Number(loadPayload.listed || 0);
+    const loaded = Number(loadPayload.fetched_new || 0);
+    const found = Number(analyzeDone.application_related_found || 0);
+    const analyzed = Number(analyzeDone.analyzed || 0);
+    const missingCompany = Number(analyzeDone.missing_company || 0);
+    const failures = Number(analyzeDone.failed || 0);
+    const remaining = Number(analyzeDone.remaining_unprocessed || 0);
+    state.cycleReadyToAnalyze = remaining;
+    state.cycleEstimatedCostUsd = 0;
+    updateAnalyzeButtonState();
+
+    if (analyzed > 0) {
+      setStatus(
+        `Done: listed ${listed.toLocaleString()} in Gmail (${loaded.toLocaleString()} newly fetched). Found ${found} application-related emails out of ${analyzed} analyzed.`
+      );
+    } else {
+      setStatus(
+        `Done: listed ${listed.toLocaleString()} in Gmail (${loaded.toLocaleString()} newly fetched). No messages required classification.`
+      );
+    }
+
+    const notes = [];
+    notes.push(`${listed.toLocaleString()} matched in Gmail · ${loaded.toLocaleString()} newly loaded`);
+    notes.push(`Found ${found} application-related out of ${analyzed} analyzed`);
+    if (missingCompany > 0) notes.push(`${missingCompany} still need company detection`);
+    if (failures > 0) notes.push(`${failures} had processing issues`);
+    if (remaining > 0) notes.push(`${remaining} remain unprocessed`);
+    setCycleResultSummary(notes.join(" \u00b7 "));
+    await refreshCycleEstimate();
   } catch (err) {
     setStatus(err.message || String(err), { error: true });
   } finally {
@@ -896,141 +945,49 @@ async function handleCycleRun() {
   }
 }
 
-function handleClearResultsClick() {
-  if (state.pullBusy || state.processBusy || state.cycleBusy || state.mutateBusy) return;
-  setConfirmVisible("wipe_confirm_row", false);
-  setConfirmVisible("clear_confirm_row", true);
-  setStatus('Press "Confirm" to clear stored classifications.');
-}
-
-function handleWipeCacheClick() {
-  if (state.pullBusy || state.processBusy || state.cycleBusy || state.mutateBusy) return;
-  setConfirmVisible("clear_confirm_row", false);
-  setConfirmVisible("wipe_confirm_row", true);
-  setStatus('Press "Confirm" to wipe cached emails for this user.');
-}
-
-async function confirmClearResults() {
-  state.mutateBusy = true;
-  setControlsBusy();
-  setStatus("Clearing stored classifications...", { spinner: true });
-  try {
-    const payload = await clearResults();
-    hideAllConfirmRows();
-    await refreshDashboard({ keepStatus: true });
-    const noun = payload.deleted === 1 ? "result" : "results";
-    setStatus(`Cleared ${payload.deleted} classification ${noun}.`);
-  } catch (err) {
-    setStatus(err.message || String(err), { error: true });
-  } finally {
-    state.mutateBusy = false;
-    setControlsBusy();
-  }
-}
-
-async function confirmWipeCache() {
-  state.mutateBusy = true;
-  setControlsBusy();
-  setStatus("Wiping cached emails for this user...", { spinner: true });
-  try {
-    const payload = await wipeCache();
-    hideAllConfirmRows();
-    await refreshDashboard({ keepStatus: true });
-    setStatus(
-      `Wipe complete: ${payload.deleted_user_links} user links, ${payload.deleted_orphan_messages} orphan messages, ${payload.deleted_orphan_results} orphan results deleted.`
-    );
-  } catch (err) {
-    setStatus(err.message || String(err), { error: true });
-  } finally {
-    state.mutateBusy = false;
-    setControlsBusy();
-  }
-}
-
-async function handleLoadFailures() {
-  const btn = $("load_failures_btn");
-  const tbody = $("failures_tbody");
-  if (!tbody) return;
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "Loading…";
-  }
-  try {
-    const payload = await getClassificationFailures({ limit: 300 });
-    const rows = Array.isArray(payload.failures) ? payload.failures : [];
-    if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No recorded failures.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = rows
-      .map((row) => {
-        const when = escapeHtml(row.created_at || "");
-        const gid = escapeHtml(row.gmail_id || "");
-        const sub = escapeHtml(row.subject || "(no subject)");
-        const typ = escapeHtml(row.error_type || "");
-        const msg = escapeHtml(row.error_message || "");
-        return (
-          `<tr>` +
-          `<td class="failures-when">${when}</td>` +
-          `<td class="failures-msg"><div class="failures-gid">${gid}</div><div class="failures-sub">${sub}</div></td>` +
-          `<td class="failures-type">${typ}</td>` +
-          `<td class="failures-detail"><pre class="failures-pre">${msg}</pre></td>` +
-          `</tr>`
-        );
-      })
-      .join("");
-  } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="4" class="table-empty">${escapeHtml(err.message || String(err))}</td></tr>`;
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "Load recent";
-    }
-  }
-}
-
 function wireEvents() {
-  $("pull_btn").addEventListener("click", handlePull);
-  $("process_btn").addEventListener("click", handleProcess);
-  $("cycle_run_btn").addEventListener("click", handleCycleRun);
-  $("show_emails_btn").addEventListener("click", handleShowEmailsToggle);
-  $("refresh_btn").addEventListener("click", () => refreshDashboard({ keepStatus: false }));
+  const onClick = (id, handler) => {
+    const el = $(id);
+    if (el) el.addEventListener("click", handler);
+  };
+  const onInput = (id, handler) => {
+    const el = $(id);
+    if (el) el.addEventListener("input", handler);
+  };
 
-  $("clear_results_btn").addEventListener("click", handleClearResultsClick);
-  $("clear_results_confirm_btn").addEventListener("click", confirmClearResults);
-  $("clear_results_cancel_btn").addEventListener("click", () => {
-    setConfirmVisible("clear_confirm_row", false);
-    setStatus("");
+  onClick("cycle_estimate_btn", handleEstimateCost);
+  onClick("cycle_analyze_btn", handleCycleAnalyze);
+  onClick("cycle_prev_btn", () => {
+    if (state.selectedCycleStartYear == null) return;
+    void selectCycleStartYear(state.selectedCycleStartYear - 1);
+  });
+  onClick("cycle_next_btn", () => {
+    if (state.selectedCycleStartYear == null) return;
+    void selectCycleStartYear(state.selectedCycleStartYear + 1);
+  });
+  onClick("cycle_all_btn", () => {
+    if (isAllCyclesSelected()) {
+      void selectCycleStartYear(currentCycleStartYear());
+    } else {
+      void selectCycleStartYear(null);
+    }
   });
 
-  $("wipe_cache_btn").addEventListener("click", handleWipeCacheClick);
-  $("wipe_cache_confirm_btn").addEventListener("click", confirmWipeCache);
-  $("wipe_cache_cancel_btn").addEventListener("click", () => {
-    setConfirmVisible("wipe_confirm_row", false);
-    setStatus("");
-  });
-
-  $("branch_search_input").addEventListener("input", (event) => {
+  onInput("branch_search_input", (event) => {
     state.branchSearchTerm = String(event.target?.value || "");
     renderBranchPairTable();
   });
 
-  const failuresBtn = $("load_failures_btn");
-  if (failuresBtn) {
-    failuresBtn.addEventListener("click", () => void handleLoadFailures());
-  }
-
-  const timelineBtn = $("timeline_toggle_btn");
-  if (timelineBtn) {
-    timelineBtn.addEventListener("click", () => void toggleTimeline());
-  }
+  onClick("timeline_toggle_btn", () => void toggleTimeline());
 }
 
 async function init() {
   wireEvents();
-  updateShowEmailsButton();
+  refreshCyclePicker();
+  updateAnalyzeButtonState();
   setControlsBusy();
   await refreshDashboard();
+  await refreshCycleEstimate();
   setControlsBusy();
 }
 

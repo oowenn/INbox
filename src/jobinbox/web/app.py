@@ -24,6 +24,7 @@ from jobinbox.web.models import (
     FetchMessagesResponse,
     InboxResponse,
     MonthlyCountsResponse,
+    CycleEstimateResponse,
     SankeyResponse,
     WipeCacheResponse,
 )
@@ -36,7 +37,11 @@ from jobinbox.web.services import (
     classify_message,
     clear_results,
     fetch_messages,
+    get_cycle_estimate,
+    iter_cycle_count_list_events,
+    iter_application_cycle_analyze_events,
     iter_application_cycle_events,
+    iter_application_cycle_load_events,
     iter_batch_events,
     list_cached_messages,
     list_classification_failures,
@@ -77,25 +82,76 @@ def health() -> dict[str, object]:
 
 
 @app.get("/api/dashboard/summary", response_model=DashboardSummaryResponse)
-def dashboard_summary() -> DashboardSummaryResponse:
+def dashboard_summary(cycle_start_year: int | None = Query(default=None, ge=2000, le=2100)) -> DashboardSummaryResponse:
     try:
-        return build_dashboard_summary(runtime)
+        return build_dashboard_summary(runtime, cycle_start_year=cycle_start_year)
     except Exception as exc:  # pragma: no cover - defensive fallback for API surface
         raise HTTPException(status_code=500, detail=f"Dashboard summary error: {exc}") from exc
 
 
 @app.get("/api/analytics/sankey", response_model=SankeyResponse)
-def sankey_analytics() -> SankeyResponse:
+def sankey_analytics(cycle_start_year: int | None = Query(default=None, ge=2000, le=2100)) -> SankeyResponse:
     try:
-        return build_sankey(runtime)
+        return build_sankey(runtime, cycle_start_year=cycle_start_year)
     except Exception as exc:  # pragma: no cover - defensive fallback for API surface
         raise HTTPException(status_code=500, detail=f"Sankey analytics error: {exc}") from exc
 
 
-@app.get("/api/analytics/monthly", response_model=MonthlyCountsResponse)
-def monthly_analytics(limit_months: int = Query(default=48, ge=1, le=240)) -> MonthlyCountsResponse:
+@app.delete("/api/cycle/gmail-count")
+def delete_cycle_gmail_count_route(
+    cycle_start_year: int = Query(..., ge=2000, le=2100),
+) -> dict[str, bool]:
+    runtime.store.delete_cycle_gmail_list_count(
+        user_id=runtime.settings.user_id,
+        cycle_start_year=cycle_start_year,
+    )
+    return {"ok": True}
+
+
+@app.post("/api/cycle/count/stream")
+def cycle_count_stream_route(payload: ApplicationCycleRunRequest) -> StreamingResponse:
+    def event_bytes() -> Iterator[bytes]:
+        for event in iter_cycle_count_list_events(runtime, payload):
+            yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        event_bytes(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/cycle/estimate", response_model=CycleEstimateResponse)
+def cycle_estimate(
+    cycle_start_year: int = Query(..., ge=2000, le=2100),
+    query: str = Query(
+        default="in:inbox",
+        description="Base Gmail query; cycle date bounds are appended server-side.",
+    ),
+) -> CycleEstimateResponse:
     try:
-        return build_monthly_counts(runtime, limit_months=limit_months)
+        return get_cycle_estimate(runtime, cycle_start_year=cycle_start_year, query=query)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Cycle estimate error: {exc}") from exc
+
+
+@app.get("/api/analytics/monthly", response_model=MonthlyCountsResponse)
+def monthly_analytics(
+    limit_months: int = Query(default=48, ge=1, le=240),
+    cycle_start_year: int | None = Query(default=None, ge=2000, le=2100),
+) -> MonthlyCountsResponse:
+    try:
+        return build_monthly_counts(
+            runtime,
+            limit_months=limit_months,
+            cycle_start_year=cycle_start_year,
+        )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Monthly analytics error: {exc}") from exc
 
@@ -164,6 +220,40 @@ def run_application_cycle_route(payload: ApplicationCycleRunRequest) -> Applicat
 def run_application_cycle_stream_route(payload: ApplicationCycleRunRequest) -> StreamingResponse:
     def event_bytes() -> Iterator[bytes]:
         for event in iter_application_cycle_events(runtime, payload):
+            yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        event_bytes(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/cycle/load/stream")
+def load_application_cycle_stream_route(payload: ApplicationCycleRunRequest) -> StreamingResponse:
+    def event_bytes() -> Iterator[bytes]:
+        for event in iter_application_cycle_load_events(runtime, payload):
+            yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        event_bytes(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/cycle/analyze/stream")
+def analyze_application_cycle_stream_route(payload: ApplicationCycleRunRequest) -> StreamingResponse:
+    def event_bytes() -> Iterator[bytes]:
+        for event in iter_application_cycle_analyze_events(runtime, payload):
             yield f"data: {json.dumps(event)}\n\n".encode("utf-8")
 
     return StreamingResponse(

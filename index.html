@@ -12,59 +12,31 @@
       <header class="app-header">
         <h1>Job Inbox Dashboard</h1>
         <p>
-          Product-focused workflow: pull recent emails, process unclassified messages with LLM, and inspect outcome
-          flows in an interactive Sankey chart.
+          Analyze your full application cycle from inbox email history and review progress in one place.
         </p>
       </header>
 
       <section class="card controls-card">
         <div class="control-grid">
-          <div class="control-block">
-            <h2>Pull</h2>
-            <label>
-              Newest emails
-              <input id="pull_count_input" type="number" min="1" max="500" value="100" />
-            </label>
-            <button id="pull_btn" type="button">Pull newest</button>
-          </div>
-
-          <div class="control-block">
-            <h2>Process</h2>
-            <label>
-              Unprocessed emails
-              <input id="process_count_input" type="number" min="1" max="500" value="100" />
-            </label>
-            <button id="process_btn" type="button">Process emails</button>
-          </div>
-
-          <div class="control-block">
-            <h2>Application Cycle</h2>
-            <label>
-              Fetch limit (since most recent Jun 1)
-              <input id="cycle_fetch_limit_input" type="number" min="100" max="100000" value="12000" />
-            </label>
-            <label>
-              Classify batch size
-              <input id="cycle_batch_size_input" type="number" min="10" max="500" value="250" />
-            </label>
-            <button id="cycle_run_btn" type="button">Get Application Cycle</button>
-          </div>
-
-          <div class="control-block">
-            <h2>Wipe</h2>
-            <button id="clear_results_btn" type="button" class="danger subtle-danger">Clear results only</button>
-            <div id="clear_confirm_row" class="confirm-row" hidden>
-              <span>Remove all stored classifications for this user?</span>
-              <button id="clear_results_confirm_btn" type="button" class="danger">Confirm</button>
-              <button id="clear_results_cancel_btn" type="button">Cancel</button>
+          <div class="control-block cycle-control-block">
+            <h2>Get Application Cycle</h2>
+            <div class="subtle-text cycle-hint">
+              Pick a cycle starting June 1. Estimate Cost refreshes the Gmail match count and cost. Analyze loads any
+              missing emails for that cycle, then classifies them (one combined step).
             </div>
-
-            <button id="wipe_cache_btn" type="button" class="danger">Wipe cached emails + results</button>
-            <div id="wipe_confirm_row" class="confirm-row" hidden>
-              <span>Delete this user's cached emails and linked results?</span>
-              <button id="wipe_cache_confirm_btn" type="button" class="danger">Confirm</button>
-              <button id="wipe_cache_cancel_btn" type="button">Cancel</button>
+            <div class="cycle-picker" aria-label="Cycle selection">
+              <button id="cycle_prev_btn" type="button" aria-label="Previous cycle">←</button>
+              <div id="cycle_label" class="cycle-label"></div>
+              <button id="cycle_next_btn" type="button" aria-label="Next cycle">→</button>
             </div>
+            <div class="cycle-picker-actions">
+              <button id="cycle_all_btn" type="button">All Cycles</button>
+            </div>
+            <div class="cycle-actions">
+              <button id="cycle_estimate_btn" type="button">Estimate Cost</button>
+              <button id="cycle_analyze_btn" type="button" disabled>Analyze</button>
+            </div>
+            <div id="cycle_result_summary" class="subtle-text"></div>
           </div>
         </div>
       </section>
@@ -74,54 +46,25 @@
         <div id="status_text"></div>
       </section>
 
-      <section class="card failures-card">
-        <div class="section-head">
-          <h2>Classification failures</h2>
-          <button id="load_failures_btn" type="button">Load recent</button>
-        </div>
-        <p class="subtle-text">
-          Each batch or single-classify error is logged to the server DB and stderr. Use this table to match
-          <code>gmail_id</code> to subjects and error text, or call
-          <code>GET /api/classification/failures?limit=500</code>.
-        </p>
-        <div class="branch-table-wrap failures-table-wrap">
-          <table class="branch-table failures-table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Message</th>
-                <th>Type</th>
-                <th>Detail</th>
-              </tr>
-            </thead>
-            <tbody id="failures_tbody">
-              <tr>
-                <td colspan="4" class="table-empty">Press &quot;Load recent&quot; to fetch from the server.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="metrics-grid">
         <article class="metric-card">
-          <div class="metric-label">Cached emails</div>
+          <div class="metric-label">Emails scanned</div>
           <div id="metric_cached" class="metric-value">-</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">Classified</div>
+          <div class="metric-label">Analyzed</div>
           <div id="metric_classified" class="metric-value">-</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">Unprocessed</div>
+          <div class="metric-label">Pending analysis</div>
           <div id="metric_unprocessed" class="metric-value">-</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">application=yes</div>
+          <div class="metric-label">Application-related</div>
           <div id="metric_yes" class="metric-value">-</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">application=no</div>
+          <div class="metric-label">Not application-related</div>
           <div id="metric_no" class="metric-value">-</div>
         </article>
       </section>
@@ -147,10 +90,6 @@
       <section class="card sankey-card">
         <div class="section-head">
           <h2>Application Flow Sankey</h2>
-          <div class="section-actions">
-            <button id="show_emails_btn" type="button">Show Emails</button>
-            <button id="refresh_btn" type="button">Refresh dashboard</button>
-          </div>
         </div>
         <div id="sankey_status" class="subtle-text"></div>
         <div id="sankey_chart"></div>
@@ -188,16 +127,6 @@
         </div>
       </section>
 
-      <section id="emails_panel" class="card emails-card" hidden>
-        <div class="section-head">
-          <h3>Processed Emails</h3>
-          <div id="emails_meta" class="subtle-text"></div>
-        </div>
-        <div class="subtle-text">Each row shows extraction (raw) next to final stored timeline result.</div>
-        <div id="emails_list" class="emails-list">
-          <div class="table-empty">Press "Show Emails" to inspect processed emails.</div>
-        </div>
-      </section>
     </main>
 
     <script type="module" src="/assets/js/dashboard.js"></script>

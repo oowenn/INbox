@@ -401,6 +401,7 @@ def iter_batch_events(runtime: WebRuntime, payload: BatchClassifyRequest) -> Ite
         user_id=runtime.settings.user_id,
         limit=payload.count,
         min_internal_ts=payload.min_internal_ts_ms,
+        max_internal_ts=payload.max_internal_ts_ms,
     )
     if not candidates:
         yield {

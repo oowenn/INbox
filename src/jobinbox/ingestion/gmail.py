@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -196,6 +196,69 @@ class GmailIngestion:
             creds = _load_credentials(self.desktop_credentials_path, self.token_path)
             self._svc = build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._svc
+
+    def estimate_query_result_size(self, *, query: str) -> int | None:
+        """
+        One messages.list call (no pagination) to read resultSizeEstimate for the query.
+
+        This avoids listing every id when the user only needs an approximate count.
+        """
+        svc = self._service()
+        res = (
+            svc.users()
+            .messages()
+            .list(
+                userId="me",
+                maxResults=1,
+                q=query or None,
+            )
+            .execute()
+        )
+        est = res.get("resultSizeEstimate")
+        if est is None:
+            return None
+        try:
+            n = int(est)
+        except (TypeError, ValueError):
+            return None
+        return max(0, n)
+
+    def iter_count_query_matches(self, *, query: str, max_results: int) -> Iterator[int]:
+        """
+        Walk messages.list pages, counting message ids only (no metadata/body fetches).
+
+        Yields the running total after each page until complete or max_results reached.
+        """
+        svc = self._service()
+        total = 0
+        page_token: str | None = None
+        cap = max(0, int(max_results))
+        while total < cap:
+            remaining = cap - total
+            batch_limit = min(100, remaining)
+            res = (
+                svc.users()
+                .messages()
+                .list(
+                    userId="me",
+                    maxResults=batch_limit,
+                    q=query or None,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            messages = res.get("messages") or []
+            for m in messages:
+                if m.get("id"):
+                    total += 1
+                    if total >= cap:
+                        yield total
+                        return
+            yield total
+            page_token = res.get("nextPageToken")
+            if not page_token:
+                break
+        yield total
 
     def list_message_ids(self, *, max_results: int, query: str) -> list[str]:
         svc = self._service()

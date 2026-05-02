@@ -52,7 +52,7 @@ body {
 
 .control-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(260px, 540px);
   gap: 0.9rem;
 }
 
@@ -71,6 +71,7 @@ body {
 }
 
 input,
+select,
 button {
   font: inherit;
 }
@@ -81,6 +82,53 @@ input {
   padding: 0.42rem 0.55rem;
   background: #fff;
   color: var(--text);
+}
+
+select {
+  border: 1px solid #c9d0da;
+  border-radius: 6px;
+  padding: 0.42rem 0.55rem;
+  background: #fff;
+  color: var(--text);
+}
+
+.cycle-control-block {
+  max-width: 540px;
+}
+
+.cycle-hint {
+  margin: 0 0 0.6rem;
+}
+
+.cycle-picker {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+.cycle-label {
+  text-align: center;
+  font-weight: 600;
+  color: #2a3240;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.38rem 0.5rem;
+  background: #fbfcfe;
+}
+
+.cycle-picker-actions {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.45rem;
+}
+
+.cycle-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.2rem;
 }
 
 button {

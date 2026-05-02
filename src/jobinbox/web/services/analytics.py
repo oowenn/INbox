@@ -223,8 +223,15 @@ def list_cached_messages(runtime: WebRuntime, *, limit: int) -> InboxResponse:
     return InboxResponse(messages=messages)
 
 
-def build_dashboard_summary(runtime: WebRuntime) -> DashboardSummaryResponse:
-    summary = runtime.store.get_user_dashboard_summary(user_id=runtime.settings.user_id)
+def build_dashboard_summary(
+    runtime: WebRuntime,
+    *,
+    cycle_start_year: int | None = None,
+) -> DashboardSummaryResponse:
+    summary = runtime.store.get_user_dashboard_summary(
+        user_id=runtime.settings.user_id,
+        cycle_start_year=cycle_start_year,
+    )
     return DashboardSummaryResponse(
         user_id=runtime.settings.user_id,
         cached_total=int(summary.get("cached_total") or 0),
@@ -243,22 +250,35 @@ def build_dashboard_summary(runtime: WebRuntime) -> DashboardSummaryResponse:
     )
 
 
-def build_monthly_counts(runtime: WebRuntime, *, limit_months: int = 48) -> MonthlyCountsResponse:
+def build_monthly_counts(
+    runtime: WebRuntime,
+    *,
+    limit_months: int = 48,
+    cycle_start_year: int | None = None,
+) -> MonthlyCountsResponse:
     rows = runtime.store.list_cached_email_month_counts(
         user_id=runtime.settings.user_id,
         limit_months=limit_months,
+        cycle_start_year=cycle_start_year,
     )
     return MonthlyCountsResponse(
         months=[
-            MonthlyCount(month=str(r.get("month") or ""), count=int(r.get("count") or 0))
+            MonthlyCount(
+                month=str(r.get("month") or ""),
+                count=int(r.get("count") or 0),
+                received_count=int(r.get("received_count") or 0),
+            )
             for r in rows
             if r.get("month")
         ]
     )
 
 
-def build_sankey(runtime: WebRuntime) -> SankeyResponse:
-    rows = runtime.store.list_user_classified_stage_events(user_id=runtime.settings.user_id)
+def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) -> SankeyResponse:
+    rows = runtime.store.list_user_classified_stage_events(
+        user_id=runtime.settings.user_id,
+        cycle_start_year=cycle_start_year,
+    )
     if not rows:
         return SankeyResponse(nodes=[SankeyNode(label="Received")], links=[], branch_pairs={}, total_pairs=0)
 

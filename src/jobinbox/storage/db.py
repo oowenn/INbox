@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -23,6 +24,21 @@ _UNKNOWN_ROLE_VALUES = {
     "null",
     "tbd",
 }
+
+
+def _cycle_bounds_ms(cycle_start_year: int) -> tuple[int, int]:
+    """Return inclusive start / exclusive end epoch-ms bounds for one June-to-June cycle."""
+    local_tz = datetime.now().astimezone().tzinfo
+    start_dt = datetime(cycle_start_year, 6, 1, tzinfo=local_tz)
+    end_dt = datetime(cycle_start_year + 1, 6, 1, tzinfo=local_tz)
+    return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+
+
+def _cycle_filter_sql(*, cycle_start_year: int | None, internal_ms_expr: str) -> tuple[str, list[int]]:
+    if not isinstance(cycle_start_year, int) or cycle_start_year < 2000 or cycle_start_year > 2100:
+        return "", []
+    start_ms, end_ms = _cycle_bounds_ms(cycle_start_year)
+    return f" AND {internal_ms_expr} >= ? AND {internal_ms_expr} < ?", [start_ms, end_ms]
 
 
 class JobInboxStore:
@@ -149,6 +165,18 @@ class JobInboxStore:
 
                 CREATE INDEX IF NOT EXISTS idx_processing_run_events_run_time
                     ON processing_run_events(run_id, created_at DESC, id DESC);
+
+                CREATE TABLE IF NOT EXISTS user_cycle_gmail_list_counts (
+                    user_id TEXT NOT NULL,
+                    cycle_start_year INTEGER NOT NULL,
+                    cycle_query TEXT NOT NULL,
+                    exact_listed_count INTEGER NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, cycle_start_year)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_cycle_gmail_counts_user
+                    ON user_cycle_gmail_list_counts(user_id);
                 """
             )
             self._migrate_schema(conn)
@@ -451,13 +479,17 @@ class JobInboxStore:
         user_id: str,
         limit: int,
         min_internal_ts: int | None = None,
+        max_internal_ts: int | None = None,
     ) -> list[dict[str, Any]]:
         """Most recent messages for this user that do not have a stored classification yet."""
         params: list[Any] = [user_id]
-        min_internal_clause = ""
+        internal_clause = ""
         if isinstance(min_internal_ts, int) and min_internal_ts > 0:
-            min_internal_clause = "AND CAST(COALESCE(ec.internal_date, '0') AS INTEGER) >= ?"
+            internal_clause += " AND CAST(COALESCE(ec.internal_date, '0') AS INTEGER) >= ?"
             params.append(int(min_internal_ts))
+        if isinstance(max_internal_ts, int) and max_internal_ts > 0:
+            internal_clause += " AND CAST(COALESCE(ec.internal_date, '0') AS INTEGER) < ?"
+            params.append(int(max_internal_ts))
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
@@ -472,13 +504,43 @@ class JobInboxStore:
                 JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
                 LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
                 WHERE ue.user_id = ? AND er.gmail_id IS NULL
-                  {min_internal_clause}
+                  {internal_clause}
                 ORDER BY CAST(COALESCE(ec.internal_date, '0') AS INTEGER) DESC, ue.fetched_at DESC
                 LIMIT ?
                 """,
                 params,
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def count_unprocessed_messages(
+        self,
+        *,
+        user_id: str,
+        min_internal_ts: int | None = None,
+        max_internal_ts: int | None = None,
+    ) -> int:
+        params: list[Any] = [user_id]
+        internal_clause = ""
+        if isinstance(min_internal_ts, int) and min_internal_ts > 0:
+            internal_clause += " AND CAST(COALESCE(ec.internal_date, '0') AS INTEGER) >= ?"
+            params.append(int(min_internal_ts))
+        if isinstance(max_internal_ts, int) and max_internal_ts > 0:
+            internal_clause += " AND CAST(COALESCE(ec.internal_date, '0') AS INTEGER) < ?"
+            params.append(int(max_internal_ts))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM user_emails AS ue
+                JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
+                LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
+                WHERE ue.user_id = ?
+                  AND er.gmail_id IS NULL
+                  {internal_clause}
+                """,
+                params,
+            ).fetchone()
+        return int(row["c"] or 0) if row else 0
 
     def existing_user_email_ids(self, *, user_id: str, gmail_ids: list[str]) -> set[str]:
         ids = [str(gid).strip() for gid in gmail_ids if str(gid).strip()]
@@ -501,6 +563,64 @@ class JobInboxStore:
                 found.update(str(r["gmail_id"]) for r in rows)
         return found
 
+    def get_cycle_gmail_list_count(
+        self, *, user_id: str, cycle_start_year: int, cycle_query: str
+    ) -> int | None:
+        """Return stored Gmail list count when the cycle query still matches."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT cycle_query, exact_listed_count
+                FROM user_cycle_gmail_list_counts
+                WHERE user_id = ? AND cycle_start_year = ?
+                """,
+                (user_id, cycle_start_year),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["cycle_query"] or "") != str(cycle_query or ""):
+            return None
+        return int(row["exact_listed_count"] or 0)
+
+    def upsert_cycle_gmail_list_count(
+        self,
+        *,
+        user_id: str,
+        cycle_start_year: int,
+        cycle_query: str,
+        exact_listed_count: int,
+    ) -> None:
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_cycle_gmail_list_counts (
+                    user_id, cycle_start_year, cycle_query, exact_listed_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, cycle_start_year) DO UPDATE SET
+                    cycle_query = excluded.cycle_query,
+                    exact_listed_count = excluded.exact_listed_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    cycle_start_year,
+                    str(cycle_query or ""),
+                    max(0, int(exact_listed_count)),
+                    now,
+                ),
+            )
+
+    def delete_cycle_gmail_list_count(self, *, user_id: str, cycle_start_year: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM user_cycle_gmail_list_counts
+                WHERE user_id = ? AND cycle_start_year = ?
+                """,
+                (user_id, cycle_start_year),
+            )
+
     def count_user_emails(self, *, user_id: str) -> int:
         with self._connect() as conn:
             row = conn.execute(
@@ -509,11 +629,15 @@ class JobInboxStore:
             ).fetchone()
         return int(row["c"]) if row else 0
 
-    def get_user_dashboard_summary(self, *, user_id: str) -> dict[str, Any]:
+    def get_user_dashboard_summary(self, *, user_id: str, cycle_start_year: int | None = None) -> dict[str, Any]:
         """Aggregate dashboard totals and stage counts for a single user."""
+        cycle_clause, cycle_params = _cycle_filter_sql(
+            cycle_start_year=cycle_start_year,
+            internal_ms_expr="CAST(COALESCE(ec.internal_date, '0') AS INTEGER)",
+        )
         with self._connect() as conn:
             totals = conn.execute(
-                """
+                f"""
                 SELECT
                     COUNT(ue.gmail_id) AS cached_total,
                     COALESCE(SUM(CASE WHEN er.gmail_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS classified_total,
@@ -524,26 +648,30 @@ class JobInboxStore:
                         THEN 1 ELSE 0 END), 0) AS application_yes_total,
                     COALESCE(SUM(CASE WHEN LOWER(COALESCE(er.application, '')) = 'no' THEN 1 ELSE 0 END), 0) AS application_no_total
                 FROM user_emails AS ue
+                JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
                 LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
                 WHERE ue.user_id = ?
+                {cycle_clause}
                 """,
-                (user_id,),
+                (user_id, *cycle_params),
             ).fetchone()
 
             stage_rows = conn.execute(
-                """
+                f"""
                 SELECT
                     er.stage AS stage,
                     COUNT(*) AS count
                 FROM user_emails AS ue
                 JOIN email_results AS er ON er.gmail_id = ue.gmail_id
+                JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
                 WHERE ue.user_id = ?
                   AND LOWER(er.application) = 'yes'
                   AND TRIM(COALESCE(er.company, '')) <> ''
+                  {cycle_clause}
                 GROUP BY er.stage
                 ORDER BY count DESC, er.stage ASC
                 """,
-                (user_id,),
+                (user_id, *cycle_params),
             ).fetchall()
 
         return {
@@ -561,44 +689,71 @@ class JobInboxStore:
             ],
         }
 
-    def list_cached_email_month_counts(self, *, user_id: str, limit_months: int = 48) -> list[dict[str, Any]]:
+    def list_cached_email_month_counts(
+        self,
+        *,
+        user_id: str,
+        limit_months: int = 48,
+        cycle_start_year: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Count cached emails per month for this user.
 
-        Returns rows like: { "month": "YYYY-MM", "count": int } sorted ascending by month.
+        Returns rows like:
+          { "month": "YYYY-MM", "count": int, "received_count": int }
+        sorted ascending by month.
         Months are derived from Gmail internalDate (epoch ms) when present, else the row is ignored.
         """
         cap = max(1, min(240, int(limit_months or 48)))
+        cycle_clause, cycle_params = _cycle_filter_sql(
+            cycle_start_year=cycle_start_year,
+            internal_ms_expr="CAST(COALESCE(ec.internal_date, '0') AS INTEGER)",
+        )
+        params: list[Any] = [user_id, *cycle_params, cap]
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH per_message AS (
                   SELECT
-                    CAST(COALESCE(ec.internal_date, '0') AS INTEGER) AS internal_ms
+                    CAST(COALESCE(ec.internal_date, '0') AS INTEGER) AS internal_ms,
+                    LOWER(COALESCE(er.application, '')) AS application,
+                    COALESCE(er.stage, '') AS stage
                   FROM user_emails AS ue
                   JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
+                  LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
                   WHERE ue.user_id = ?
+                    {cycle_clause}
                 )
                 SELECT
                   strftime('%Y-%m', datetime(internal_ms / 1000, 'unixepoch')) AS month,
-                  COUNT(*) AS count
+                  COUNT(*) AS count,
+                  COALESCE(SUM(CASE WHEN application = 'yes' AND stage = 'Received' THEN 1 ELSE 0 END), 0) AS received_count
                 FROM per_message
                 WHERE internal_ms > 0
                 GROUP BY month
                 ORDER BY month DESC
                 LIMIT ?
                 """,
-                (user_id, cap),
+                params,
             ).fetchall()
         out = [dict(r) for r in rows if r["month"]]
         out.reverse()
         return out
 
-    def list_user_classified_stage_events(self, *, user_id: str) -> list[dict[str, Any]]:
+    def list_user_classified_stage_events(
+        self,
+        *,
+        user_id: str,
+        cycle_start_year: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Classified stage events for this user, ordered by application pair and time."""
+        cycle_clause, cycle_params = _cycle_filter_sql(
+            cycle_start_year=cycle_start_year,
+            internal_ms_expr="CAST(COALESCE(ec.internal_date, '0') AS INTEGER)",
+        )
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     TRIM(er.company) AS company,
                     COALESCE(NULLIF(TRIM(er.canonical_company), ''), '') AS canonical_company,
@@ -615,6 +770,7 @@ class JobInboxStore:
                 WHERE ue.user_id = ?
                   AND LOWER(er.application) = 'yes'
                   AND TRIM(COALESCE(er.company, '')) <> ''
+                  {cycle_clause}
                 ORDER BY
                     LOWER(TRIM(er.company)),
                     LOWER(COALESCE(NULLIF(TRIM(er.role), ''), '(Unknown Role)')),
@@ -622,7 +778,7 @@ class JobInboxStore:
                     ue.fetched_at,
                     er.updated_at
                 """,
-                (user_id,),
+                (user_id, *cycle_params),
             ).fetchall()
         return [dict(r) for r in rows]
 

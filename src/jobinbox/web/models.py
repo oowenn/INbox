@@ -53,7 +53,11 @@ class DashboardSummaryResponse(BaseModel):
 
 class MonthlyCount(BaseModel):
     month: str = Field(description="YYYY-MM")
-    count: int
+    count: int = Field(description="Total cached emails in this month.")
+    received_count: int = Field(
+        default=0,
+        description='Emails classified as application=yes with stage="Received" in this month.',
+    )
 
 
 class MonthlyCountsResponse(BaseModel):
@@ -98,6 +102,11 @@ class BatchClassifyRequest(BaseModel):
         ge=0,
         description="Optional lower bound on Gmail internalDate epoch milliseconds for candidate selection.",
     )
+    max_internal_ts_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional exclusive upper bound on Gmail internalDate epoch milliseconds for candidate selection.",
+    )
 
 
 class BatchClassifyResponse(BaseModel):
@@ -109,18 +118,57 @@ class BatchClassifyResponse(BaseModel):
     failed_ids: list[str]
 
 
+class CycleEstimateResponse(BaseModel):
+    """Cycle scope: SQLite totals plus Gmail counts (cached exact list walk or one-call estimate)."""
+
+    cycle_start_year: int
+    cycle_start_date: str
+    cycle_query: str
+    cached_total: int = Field(description="Cached emails in this user+cycle (internal date window).")
+    ready_to_analyze: int = Field(
+        description="Unclassified cached emails in this cycle (same selection as analysis).",
+    )
+    not_analyzed_total: int = Field(
+        description="Total cycle emails not yet analyzed (includes not-yet-loaded + loaded-unclassified when exact count is known).",
+    )
+    estimated_cost_usd: float = Field(
+        description="Estimated cost to analyze not_analyzed_total emails.",
+    )
+    potential_estimated_cost_usd: float | None = Field(
+        default=None,
+        description="When nothing is ready locally, upper bound to analyze after loading (scaled by match count × rate).",
+    )
+    gmail_exact_list_count: int | None = Field(
+        default=None,
+        description="Exact messages.list id count for cycle_query if cached; None if not yet counted.",
+    )
+    needs_exact_list_scan: bool = Field(
+        default=False,
+        description="True when no stored exact count yet — client should POST /api/cycle/count/stream once.",
+    )
+    gmail_result_size_estimate: int | None = Field(
+        default=None,
+        description="Gmail resultSizeEstimate when exact count is not cached yet (approximate).",
+    )
+
+
 class ApplicationCycleRunRequest(BaseModel):
-    fetch_limit: int = Field(
-        default=12000,
-        ge=100,
-        le=100000,
-        description="Maximum number of Gmail ids to list for this cycle window.",
+    fetch_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional max Gmail ids to list for this cycle; omit to list all matching ids (subject to a high safety ceiling).",
     )
     classify_batch_size: int = Field(
         default=250,
         ge=10,
         le=500,
         description="Batch size for each classify pass while draining cycle-window unprocessed emails.",
+    )
+    cycle_start_year: int | None = Field(
+        default=None,
+        ge=2000,
+        le=2100,
+        description="Optional cycle start year; when omitted, uses the most recent June 1 cycle.",
     )
     concurrency: int | None = Field(default=None, ge=1, le=16)
     query: str = Field(
