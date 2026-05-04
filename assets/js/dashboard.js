@@ -62,28 +62,73 @@ function selectedCycleStartYear() {
   return isAllCyclesSelected() ? undefined : state.selectedCycleStartYear;
 }
 
+function ensureCycleYearSelectOptions(select) {
+  const current = currentCycleStartYear();
+  if (select.dataset.cycleMaxYear === String(current) && select.options.length > 0) {
+    return;
+  }
+  select.dataset.cycleMaxYear = String(current);
+  select.innerHTML = "";
+  const optAll = document.createElement("option");
+  optAll.value = "";
+  optAll.textContent = "All cycles";
+  select.appendChild(optAll);
+  for (let y = current; y >= MIN_CYCLE_YEAR; y -= 1) {
+    const opt = document.createElement("option");
+    opt.value = String(y);
+    opt.textContent = cycleYearLabel(y);
+    select.appendChild(opt);
+  }
+}
+
+function syncCycleYearSelectValue() {
+  const select = $("cycle_year_select");
+  if (!select) return;
+  const v = state.selectedCycleStartYear == null ? "" : String(state.selectedCycleStartYear);
+  if (select.value !== v) {
+    select.value = v;
+  }
+}
+
+function cyclePickerSubtitleText() {
+  const selected = state.selectedCycleStartYear;
+  if (selected == null) return "";
+  const current = currentCycleStartYear();
+  if (selected === current) return "(current cycle)";
+  if (selected === MIN_CYCLE_YEAR) return "(earliest cycle)";
+  return "";
+}
+
+function syncCyclePickerSubtitle() {
+  const el = $("cycle_picker_subtitle");
+  if (!el) return;
+  const text = cyclePickerSubtitleText();
+  el.textContent = text;
+  el.hidden = text === "";
+}
+
 function refreshCyclePicker() {
+  const select = $("cycle_year_select");
   const prevBtn = $("cycle_prev_btn");
   const nextBtn = $("cycle_next_btn");
-  const allBtn = $("cycle_all_btn");
-  const label = $("cycle_label");
   const current = currentCycleStartYear();
   const selected = state.selectedCycleStartYear;
-
-  if (label) {
-    if (selected == null) {
-      label.textContent = "All Cycles";
-    } else {
-      const suffix = selected === current ? " (current cycle)" : "";
-      label.textContent = `${cycleYearLabel(selected)}${suffix}`;
-    }
-  }
   const navBusy = state.cycleBusy || state.cycleScanBusy;
-  if (prevBtn) prevBtn.disabled = navBusy || selected == null || selected <= MIN_CYCLE_YEAR;
-  if (nextBtn) nextBtn.disabled = navBusy || selected == null || selected >= current;
-  if (allBtn) {
-    allBtn.textContent = selected == null ? "Current Cycle" : "All Cycles";
-    allBtn.disabled = navBusy;
+
+  if (select) {
+    ensureCycleYearSelectOptions(select);
+    syncCycleYearSelectValue();
+    select.disabled = navBusy;
+  }
+  syncCyclePickerSubtitle();
+
+  if (prevBtn) {
+    prevBtn.disabled =
+      navBusy || selected == null || (typeof selected === "number" && selected <= MIN_CYCLE_YEAR);
+  }
+  if (nextBtn) {
+    nextBtn.disabled =
+      navBusy || (typeof selected === "number" && selected >= current);
   }
 }
 
@@ -98,7 +143,10 @@ async function selectCycleStartYear(nextYearOrNull) {
     nextYearOrNull == null
       ? null
       : Math.max(MIN_CYCLE_YEAR, Math.min(current, Number(nextYearOrNull) || current));
-  if (normalized === state.selectedCycleStartYear) return;
+  if (normalized === state.selectedCycleStartYear) {
+    syncCycleYearSelectValue();
+    return;
+  }
   state.selectedCycleStartYear = normalized;
   state.cycleReadyToAnalyze = 0;
   state.cycleLoadedYear = null;
@@ -558,12 +606,7 @@ function setSankeyStatus(text, isError = false) {
 
 function setControlsBusy() {
   const busy = state.cycleBusy || state.cycleScanBusy;
-  const ids = [
-    "cycle_estimate_btn",
-    "cycle_prev_btn",
-    "cycle_next_btn",
-    "cycle_all_btn",
-  ];
+  const ids = ["cycle_estimate_btn", "cycle_year_select", "cycle_prev_btn", "cycle_next_btn"];
   for (const id of ids) {
     const el = $(id);
     if (el) el.disabled = busy;
@@ -962,16 +1005,25 @@ function wireEvents() {
     void selectCycleStartYear(state.selectedCycleStartYear - 1);
   });
   onClick("cycle_next_btn", () => {
-    if (state.selectedCycleStartYear == null) return;
+    if (state.selectedCycleStartYear == null) {
+      void selectCycleStartYear(currentCycleStartYear());
+      return;
+    }
     void selectCycleStartYear(state.selectedCycleStartYear + 1);
   });
-  onClick("cycle_all_btn", () => {
-    if (isAllCyclesSelected()) {
-      void selectCycleStartYear(currentCycleStartYear());
-    } else {
-      void selectCycleStartYear(null);
-    }
-  });
+  const cycleSelect = $("cycle_year_select");
+  if (cycleSelect) {
+    cycleSelect.addEventListener("change", () => {
+      const raw = cycleSelect.value;
+      if (raw === "") {
+        void selectCycleStartYear(null);
+        return;
+      }
+      const y = Number.parseInt(raw, 10);
+      if (!Number.isFinite(y)) return;
+      void selectCycleStartYear(y);
+    });
+  }
 
   onInput("branch_search_input", (event) => {
     state.branchSearchTerm = String(event.target?.value || "");

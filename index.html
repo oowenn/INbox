@@ -20,17 +20,21 @@
         <div class="control-grid">
           <div class="control-block cycle-control-block">
             <h2>Get Application Cycle</h2>
-            <div class="subtle-text cycle-hint">
-              Pick a cycle starting June 1. Estimate Cost refreshes the Gmail match count and cost. Analyze loads any
-              missing emails for that cycle, then classifies them (one combined step).
-            </div>
-            <div class="cycle-picker" aria-label="Cycle selection">
-              <button id="cycle_prev_btn" type="button" aria-label="Previous cycle">←</button>
-              <div id="cycle_label" class="cycle-label"></div>
-              <button id="cycle_next_btn" type="button" aria-label="Next cycle">→</button>
-            </div>
-            <div class="cycle-picker-actions">
-              <button id="cycle_all_btn" type="button">All Cycles</button>
+            <p class="subtle-text cycle-hint">Explore an application cycle starting from June 1st.</p>
+            <div class="cycle-picker-shell">
+              <button type="button" id="cycle_prev_btn" class="cycle-step-btn" aria-label="Previous cycle">
+                &lt;
+              </button>
+              <div class="cycle-select-wrap">
+                <label for="cycle_year_select" class="visually-hidden">Application cycle</label>
+                <div class="cycle-picker-center">
+                  <select id="cycle_year_select" class="cycle-year-select" aria-label="Application cycle"></select>
+                  <div id="cycle_picker_subtitle" class="cycle-picker-subtitle" aria-live="polite" hidden></div>
+                </div>
+              </div>
+              <button type="button" id="cycle_next_btn" class="cycle-step-btn" aria-label="Next cycle">
+                &gt;
+              </button>
             </div>
             <div class="cycle-actions">
               <button id="cycle_estimate_btn" type="button">Estimate Cost</button>
