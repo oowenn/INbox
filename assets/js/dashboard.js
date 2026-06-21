@@ -442,7 +442,7 @@ async function renderTimelineChart(rows) {
   const monthWidth = 72;
   const monthCount = series.months.length;
   const minWidth = Math.max(scroll.clientWidth, monthCount * monthWidth);
-  status.textContent = `Loaded ${monthCount} months (total + Received).`;
+  status.textContent = `Loaded ${monthCount} months.`;
 
   const monthLabels = series.x.map(formatMonthTick);
   const totalTrace = {
@@ -465,8 +465,8 @@ async function renderTimelineChart(rows) {
     text: monthLabels,
     line: { color: "#84c9cc", width: 3, shape: "linear" },
     marker: { color: "#84c9cc", size: 7 },
-    name: "Received",
-    hovertemplate: "%{text}<br>%{y} Received<extra></extra>",
+    name: "Applications",
+    hovertemplate: "%{text}<br>%{y} Applications<extra></extra>",
   };
 
   const layout = {
@@ -628,8 +628,6 @@ function hideAllConfirmRows() {
 function renderSummary(summary) {
   state.summary = summary;
   $("metric_cached").textContent = String(summary.cached_total ?? 0);
-  $("metric_classified").textContent = String(summary.classified_total ?? 0);
-  $("metric_unprocessed").textContent = String(summary.unprocessed_total ?? 0);
   $("metric_yes").textContent = String(summary.application_yes_total ?? 0);
   $("metric_no").textContent = String(summary.application_no_total ?? 0);
 

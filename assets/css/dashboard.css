@@ -48,18 +48,8 @@ body {
 
 .controls-card {
   margin-bottom: 0.75rem;
-}
-
-.control-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr);
-  gap: 0.9rem;
-  justify-items: center;
-}
-
-.control-block h2 {
-  margin: 0 0 0.65rem;
-  font-size: 1rem;
+  padding-top: 1.1rem;
+  padding-bottom: 0.8rem;
 }
 
 .control-block label {
@@ -93,20 +83,6 @@ select {
   color: var(--text);
 }
 
-.cycle-control-block {
-  width: min(100%, 560px);
-  text-align: center;
-}
-
-.cycle-control-block h2 {
-  text-align: center;
-}
-
-.cycle-hint {
-  margin: 0 auto 1rem;
-  max-width: 28rem;
-  line-height: 1.45;
-}
 
 .visually-hidden {
   position: absolute;
@@ -132,15 +108,13 @@ select {
 .cycle-step-btn {
   flex-shrink: 0;
   margin: 0;
-  padding: 0.15rem 0.25rem;
+  padding: 0.3rem 0.5rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
   box-shadow: none;
-  font-size: 1.35rem;
-  font-weight: 500;
   line-height: 1;
   color: #2a3140;
   cursor: pointer;
@@ -155,6 +129,10 @@ select {
 .cycle-step-btn:disabled {
   color: #d1d5db;
   cursor: default;
+}
+
+.cycle-step-btn svg {
+  display: block;
 }
 
 .cycle-select-wrap {
@@ -318,7 +296,7 @@ button.subtle-danger {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.55rem;
   margin-bottom: 0.75rem;
 }
@@ -693,14 +671,6 @@ button.subtle-danger {
 }
 
 @media (max-width: 960px) {
-  .control-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .metrics-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .detail-grid {
     grid-template-columns: 1fr;
   }

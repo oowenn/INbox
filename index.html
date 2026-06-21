@@ -3,46 +3,42 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Job Inbox Dashboard</title>
+    <title>INbox Dashboard</title>
     <link rel="stylesheet" href="/assets/css/dashboard.css" />
     <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
   </head>
   <body>
     <main class="app-shell">
       <header class="app-header">
-        <h1>Job Inbox Dashboard</h1>
-        <p>
-          Analyze your full application cycle from inbox email history and review progress in one place.
-        </p>
+        <h1>INbox Dashboard</h1>
+        <p>Explore your application cycles beginning from June 1st.</p>
       </header>
 
       <section class="card controls-card">
-        <div class="control-grid">
-          <div class="control-block cycle-control-block">
-            <h2>Get Application Cycle</h2>
-            <p class="subtle-text cycle-hint">Explore an application cycle starting from June 1st.</p>
-            <div class="cycle-picker-shell">
-              <button type="button" id="cycle_prev_btn" class="cycle-step-btn" aria-label="Previous cycle">
-                &lt;
-              </button>
-              <div class="cycle-select-wrap">
-                <label for="cycle_year_select" class="visually-hidden">Application cycle</label>
-                <div class="cycle-picker-center">
-                  <select id="cycle_year_select" class="cycle-year-select" aria-label="Application cycle"></select>
-                  <div id="cycle_picker_subtitle" class="cycle-picker-subtitle" aria-live="polite" hidden></div>
-                </div>
-              </div>
-              <button type="button" id="cycle_next_btn" class="cycle-step-btn" aria-label="Next cycle">
-                &gt;
-              </button>
+        <div class="cycle-picker-shell">
+          <button type="button" id="cycle_prev_btn" class="cycle-step-btn" aria-label="Previous cycle">
+            <svg width="9" height="15" viewBox="0 0 9 15" fill="none" aria-hidden="true">
+              <path d="M7.5 1.5L2 7.5L7.5 13.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div class="cycle-select-wrap">
+            <label for="cycle_year_select" class="visually-hidden">Application cycle</label>
+            <div class="cycle-picker-center">
+              <select id="cycle_year_select" class="cycle-year-select" aria-label="Application cycle"></select>
+              <div id="cycle_picker_subtitle" class="cycle-picker-subtitle" aria-live="polite" hidden></div>
             </div>
-            <div class="cycle-actions">
-              <button id="cycle_estimate_btn" type="button">Estimate Cost</button>
-              <button id="cycle_analyze_btn" type="button" disabled>Analyze</button>
-            </div>
-            <div id="cycle_result_summary" class="subtle-text"></div>
           </div>
+          <button type="button" id="cycle_next_btn" class="cycle-step-btn" aria-label="Next cycle">
+            <svg width="9" height="15" viewBox="0 0 9 15" fill="none" aria-hidden="true">
+              <path d="M1.5 1.5L7 7.5L1.5 13.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
+        <div class="cycle-actions">
+          <button id="cycle_estimate_btn" type="button">Estimate Cost</button>
+          <button id="cycle_analyze_btn" type="button" disabled>Analyze</button>
+        </div>
+        <div id="cycle_result_summary" class="subtle-text"></div>
       </section>
 
       <section id="status_row" class="status-row">
@@ -54,14 +50,6 @@
         <article class="metric-card">
           <div class="metric-label">Emails scanned</div>
           <div id="metric_cached" class="metric-value">-</div>
-        </article>
-        <article class="metric-card">
-          <div class="metric-label">Analyzed</div>
-          <div id="metric_classified" class="metric-value">-</div>
-        </article>
-        <article class="metric-card">
-          <div class="metric-label">Pending analysis</div>
-          <div id="metric_unprocessed" class="metric-value">-</div>
         </article>
         <article class="metric-card">
           <div class="metric-label">Application-related</div>
@@ -79,9 +67,6 @@
           <div class="section-actions">
             <button id="timeline_toggle_btn" type="button">Show</button>
           </div>
-        </div>
-        <div class="subtle-text">
-          Counts of cached emails by month (uses Gmail internalDate). Useful for spotting gaps.
         </div>
         <div id="timeline_body" hidden>
           <div id="timeline_status" class="subtle-text">Not loaded yet.</div>
@@ -101,7 +86,7 @@
 
       <section class="card detail-grid">
         <div class="detail-left">
-          <h3>Branch details</h3>
+          <h3>Stage details</h3>
           <div id="branch_title" class="detail-title">Click any branch in the Sankey chart.</div>
           <label class="branch-search">
             Search company or titles
@@ -126,7 +111,7 @@
         </div>
 
         <div class="detail-right">
-          <h3>Stage breakdown</h3>
+          <h3>Breakdown</h3>
           <div id="stage_chart"></div>
         </div>
       </section>
