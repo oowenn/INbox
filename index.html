@@ -116,6 +116,51 @@
         </div>
       </section>
 
+      <section class="card messages-card">
+        <div class="section-head">
+          <h2>Messages</h2>
+        </div>
+        <div class="messages-controls">
+          <label class="messages-filter">
+            Show
+            <select id="messages_filter_select">
+              <option value="all">All</option>
+              <option value="yes">Application-related</option>
+              <option value="no">Not application-related</option>
+            </select>
+          </label>
+          <label class="messages-search">
+            Search
+            <input id="messages_search_input" type="text" placeholder="subject, sender, company, role" />
+          </label>
+        </div>
+        <div id="messages_status" class="subtle-text">Not loaded yet.</div>
+        <div class="branch-table-wrap messages-table-wrap">
+          <table class="branch-table messages-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Sender</th>
+                <th>Subject</th>
+                <th>Application</th>
+                <th>Company</th>
+                <th>Role</th>
+                <th>Stage</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="messages_body">
+              <tr>
+                <td colspan="8" class="table-empty">Not loaded yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="messages-actions">
+          <button id="messages_load_more_btn" type="button">Load more</button>
+        </div>
+      </section>
+
     </main>
 
     <script type="module" src="/assets/js/dashboard.js"></script>

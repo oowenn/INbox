@@ -180,6 +180,9 @@ def _to_inbox_message(row: dict[str, object]) -> InboxMessage:
             "role": (str(row.get("result_role") or "").strip() or None),
             "stage": str(row.get("result_stage") or "Unknown"),
             "interview_date": (str(row.get("result_interview_date") or "").strip() or None),
+            "manually_corrected_at": (
+                str(row.get("result_manually_corrected_at") or "").strip() or None
+            ),
         }
 
     return InboxMessage(

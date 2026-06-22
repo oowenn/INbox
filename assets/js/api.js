@@ -103,6 +103,32 @@ export async function clearResults() {
   return requestJson("/api/results/clear", { method: "POST" }, "Failed to clear results");
 }
 
+export async function correctMessageResult({
+  gmailId,
+  application,
+  company,
+  role,
+  stage,
+  interviewDate,
+}) {
+  return requestJson(
+    "/api/results/correct",
+    {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        gmail_id: gmailId,
+        application,
+        company: company || null,
+        role: role || null,
+        stage,
+        interview_date: interviewDate || null,
+      }),
+    },
+    "Failed to save correction"
+  );
+}
+
 export async function getClassificationFailures({ limit = 200, gmailId } = {}) {
   const clamped = Math.max(1, Math.min(500, Number(limit) || 200));
   const params = new URLSearchParams({ limit: String(clamped) });

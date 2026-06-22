@@ -204,6 +204,8 @@ class JobInboxStore:
                 WHERE canonical_role IS NULL
                 """
             )
+        if "manually_corrected_at" not in column_names:
+            conn.execute("ALTER TABLE email_results ADD COLUMN manually_corrected_at TEXT")
 
         existing = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='classification_failures'"
@@ -387,6 +389,7 @@ class JobInboxStore:
                     extraction_json = excluded.extraction_json,
                     llm_provider = excluded.llm_provider,
                     llm_model = excluded.llm_model,
+                    manually_corrected_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -403,6 +406,64 @@ class JobInboxStore:
                     llm_model,
                 ),
             )
+
+    def apply_manual_correction(
+        self,
+        *,
+        user_id: str,
+        gmail_id: str,
+        result: dict[str, Any],
+    ) -> bool:
+        """
+        Overwrite one row's classification fields with a user-submitted correction.
+
+        Requires the row to already exist and belong to this user (a guarded UPDATE,
+        not an upsert) -- correcting something that was never classified isn't this
+        method's job. Leaves extraction_json/llm_provider/llm_model untouched, since
+        those are the original LLM trace, not the human's correction. Stamps
+        manually_corrected_at so apply_role_backfills/remove_events_from_timeline
+        treat this row as immune to later automatic curation.
+        """
+        company_value = result.get("company")
+        canonical_company = canonical_company_for_storage(
+            company_value if isinstance(company_value, str) else None
+        )
+        role_value = result.get("role")
+        canonical_value = canonical_role_for_storage(
+            role_value if isinstance(role_value, str) else None
+        )
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE email_results
+                SET application = ?,
+                    company = ?,
+                    canonical_company = ?,
+                    role = ?,
+                    canonical_role = ?,
+                    stage = ?,
+                    interview_date = ?,
+                    manually_corrected_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE gmail_id = ?
+                  AND EXISTS (
+                    SELECT 1 FROM user_emails AS ue
+                    WHERE ue.user_id = ? AND ue.gmail_id = email_results.gmail_id
+                  )
+                """,
+                (
+                    str(result.get("application") or "no"),
+                    company_value,
+                    canonical_company,
+                    role_value,
+                    canonical_value,
+                    str(result.get("stage") or "Unknown"),
+                    result.get("interview_date"),
+                    gmail_id,
+                    user_id,
+                ),
+            )
+        return (cur.rowcount or 0) > 0
 
     def email_exists(self, *, gmail_id: str) -> bool:
         with self._connect() as conn:
@@ -433,6 +494,7 @@ class JobInboxStore:
                     er.stage AS result_stage,
                     er.interview_date AS result_interview_date,
                     er.extraction_json AS result_extraction_json,
+                    er.manually_corrected_at AS result_manually_corrected_at,
                     er.updated_at AS resultUpdatedAt
                 FROM user_emails AS ue
                 JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
@@ -455,7 +517,8 @@ class JobInboxStore:
                     er.canonical_company AS canonical_company,
                     er.role AS role,
                     er.stage AS stage,
-                    er.interview_date AS interview_date
+                    er.interview_date AS interview_date,
+                    er.manually_corrected_at AS manually_corrected_at
                 FROM user_emails AS ue
                 JOIN email_results AS er ON er.gmail_id = ue.gmail_id
                 WHERE ue.user_id = ? AND ue.gmail_id = ?
@@ -471,6 +534,7 @@ class JobInboxStore:
             "role": (str(row["role"] or "").strip() or None),
             "stage": str(row["stage"] or "Unknown"),
             "interview_date": (str(row["interview_date"] or "").strip() or None),
+            "manually_corrected_at": (str(row["manually_corrected_at"] or "").strip() or None),
         }
 
     def list_latest_unprocessed_messages(
@@ -879,6 +943,7 @@ class JobInboxStore:
                         interview_date = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE gmail_id = ?
+                      AND manually_corrected_at IS NULL
                       AND EXISTS (
                         SELECT 1 FROM user_emails AS ue
                         WHERE ue.user_id = ? AND ue.gmail_id = email_results.gmail_id
@@ -930,7 +995,8 @@ class JobInboxStore:
             for gmail_id, role in normalized_updates.items():
                 current = conn.execute(
                     """
-                    SELECT er.role AS role, er.application AS application
+                    SELECT er.role AS role, er.application AS application,
+                           er.manually_corrected_at AS manually_corrected_at
                     FROM user_emails AS ue
                     JOIN email_results AS er ON er.gmail_id = ue.gmail_id
                     WHERE ue.user_id = ? AND ue.gmail_id = ?
@@ -940,6 +1006,9 @@ class JobInboxStore:
                 if not current:
                     continue
                 if str(current["application"] or "").strip().lower() != "yes":
+                    continue
+                if current["manually_corrected_at"]:
+                    # A human already fixed this row -- never auto-overwrite it.
                     continue
 
                 current_role_raw = str(current["role"] or "").strip()
@@ -955,6 +1024,7 @@ class JobInboxStore:
                         canonical_role = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE gmail_id = ?
+                      AND manually_corrected_at IS NULL
                     """,
                     (role, canonical, gmail_id),
                 )
