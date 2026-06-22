@@ -807,7 +807,7 @@ async function renderSankey(payload) {
   });
   renderBranchPairs("");
   setSankeyStatus(
-    `Loaded ${payload.links.length} branches across ${payload.total_pairs} companies (Interview counted only when interview_date exists).`
+    `Loaded ${payload.links.length} branches across ${payload.total_pairs} applications (Interview counted only when interview_date exists).`
   );
 }
 

@@ -282,9 +282,13 @@ def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) ->
     if not rows:
         return SankeyResponse(nodes=[SankeyNode(label="Received")], links=[], branch_pairs={}, total_pairs=0)
 
-    # One merged timeline per canonical_company so company-name drift across stages does not split the funnel.
+    # One merged timeline per (canonical_company, canonical_role) so company-name drift
+    # across stages does not split the funnel, but distinct applications at the same
+    # company (different roles) are never blended into a single funnel either.
     # Branch detail "company" uses a representative display name; "role" column lists distinct titles seen.
-    events_by_company: dict[str, list[tuple[tuple[int, str, str], str, str, str]]] = defaultdict(list)
+    events_by_application: dict[tuple[str, str], list[tuple[tuple[int, str, str], str, str, str]]] = defaultdict(
+        list
+    )
     for row in rows:
         company_display = str(row.get("company") or "").strip()
         if not company_display:
@@ -294,6 +298,7 @@ def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) ->
         role_raw = str(row.get("role") or "").strip()
         canonical = str(row.get("canonical_role") or "").strip()
         row_title = role_raw or canonical or "(Unknown Role)"
+        application_key = (company_key, canonical)
         stage = _normalize_stage(str(row.get("stage") or "Unknown"))
         interview_date = str(row.get("interview_date") or "").strip()
         # Dashboard rule: only count Interview as a reached stage when it has an actual scheduled date.
@@ -305,13 +310,13 @@ def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) ->
             str(row.get("fetched_at") or ""),
             str(row.get("result_updated_at") or ""),
         )
-        events_by_company[company_key].append((sort_key, stage, row_title, company_display))
+        events_by_application[application_key].append((sort_key, stage, row_title, company_display))
 
     transition_counts: dict[tuple[str, str], int] = defaultdict(int)
     transition_pairs: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
-    contributing_companies: set[str] = set()
+    contributing_applications: set[tuple[str, str]] = set()
 
-    for company_key, cells in events_by_company.items():
+    for application_key, cells in events_by_application.items():
         ordered = sorted(cells, key=lambda item: item[0])
         stage_path: list[str] = []
         company_variants: set[str] = set()
@@ -347,7 +352,7 @@ def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) ->
             transition_counts[edge] += 1
             transition_pairs[edge].add(pair)
         if seen_for_pair:
-            contributing_companies.add(company_key)
+            contributing_applications.add(application_key)
 
     labels = {"Received"}
     for source, target in transition_counts:
@@ -401,5 +406,5 @@ def build_sankey(runtime: WebRuntime, *, cycle_start_year: int | None = None) ->
         ],
         links=links,
         branch_pairs=branch_pairs,
-        total_pairs=len(contributing_companies),
+        total_pairs=len(contributing_applications),
     )
