@@ -12,6 +12,7 @@ from typing import Any, Iterator
 import httpx
 from fastapi import HTTPException
 
+from jobinbox.extraction.prefilter import rule_skip_reason
 from jobinbox.web.models import (
     BatchClassifyRequest,
     BatchClassifyResponse,
@@ -23,6 +24,14 @@ from jobinbox.web.models import (
 from jobinbox.web.runtime import WebRuntime
 
 _COMPANY_HISTORY_LIMIT = 200
+
+_RULE_FILTERED_RESULT: dict[str, Any] = {
+    "application": "no",
+    "company": None,
+    "role": None,
+    "stage": "Unknown",
+    "interview_date": None,
+}
 
 _log = logging.getLogger("jobinbox.classification")
 
@@ -291,19 +300,34 @@ def _classify_and_store_only(
     Extract + persist immediately, but do NOT run company history curation.
     Used by batch mode to defer curation to one call per company at end of batch.
     """
-    extracted = classifier.classify_email(
-        subject=subject,
-        sender=sender,
-        snippet=snippet,
-        body=body,
-    )
-    runtime.store.upsert_result(
-        gmail_id=gmail_id,
-        result=extracted,
-        extraction=extracted,
-        llm_provider=runtime.settings.llm_provider,
-        llm_model=runtime.active_model_name(),
-    )
+    skip_reason = rule_skip_reason(sender=sender, subject=subject)
+    if skip_reason:
+        # Confidently not application-related (validated against this user's real
+        # classification history) — skip the LLM call entirely. llm_provider/llm_model
+        # double as an audit trail: query WHERE llm_provider='rule_filter' to re-run
+        # filtered rows through the real LLM if a rule is ever found to be wrong.
+        extracted = dict(_RULE_FILTERED_RESULT)
+        runtime.store.upsert_result(
+            gmail_id=gmail_id,
+            result=extracted,
+            extraction=extracted,
+            llm_provider="rule_filter",
+            llm_model=skip_reason,
+        )
+    else:
+        extracted = classifier.classify_email(
+            subject=subject,
+            sender=sender,
+            snippet=snippet,
+            body=body,
+        )
+        runtime.store.upsert_result(
+            gmail_id=gmail_id,
+            result=extracted,
+            extraction=extracted,
+            llm_provider=runtime.settings.llm_provider,
+            llm_model=runtime.active_model_name(),
+        )
     stored = runtime.store.get_result_for_user_message(
         user_id=runtime.settings.user_id,
         gmail_id=gmail_id,
