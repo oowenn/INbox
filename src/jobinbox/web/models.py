@@ -49,6 +49,10 @@ class DashboardSummaryResponse(BaseModel):
     unprocessed_total: int
     application_yes_total: int
     application_no_total: int
+    manually_corrected_total: int = Field(
+        default=0,
+        description="Classified rows a human has corrected -- a real accuracy signal for the pipeline.",
+    )
     stage_counts: list[DashboardStageCount]
 
 

@@ -710,7 +710,8 @@ class JobInboxStore:
                         WHEN LOWER(COALESCE(er.application, '')) = 'yes'
                          AND TRIM(COALESCE(er.company, '')) <> ''
                         THEN 1 ELSE 0 END), 0) AS application_yes_total,
-                    COALESCE(SUM(CASE WHEN LOWER(COALESCE(er.application, '')) = 'no' THEN 1 ELSE 0 END), 0) AS application_no_total
+                    COALESCE(SUM(CASE WHEN LOWER(COALESCE(er.application, '')) = 'no' THEN 1 ELSE 0 END), 0) AS application_no_total,
+                    COALESCE(SUM(CASE WHEN er.manually_corrected_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS manually_corrected_total
                 FROM user_emails AS ue
                 JOIN email_content AS ec ON ec.gmail_id = ue.gmail_id
                 LEFT JOIN email_results AS er ON er.gmail_id = ue.gmail_id
@@ -744,6 +745,7 @@ class JobInboxStore:
             "unprocessed_total": int(totals["unprocessed_total"] or 0) if totals else 0,
             "application_yes_total": int(totals["application_yes_total"] or 0) if totals else 0,
             "application_no_total": int(totals["application_no_total"] or 0) if totals else 0,
+            "manually_corrected_total": int(totals["manually_corrected_total"] or 0) if totals else 0,
             "stage_counts": [
                 {
                     "stage": str(r["stage"] or "Unknown"),

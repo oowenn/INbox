@@ -640,6 +640,7 @@ function renderSummary(summary) {
   $("metric_cached").textContent = String(summary.cached_total ?? 0);
   $("metric_yes").textContent = String(summary.application_yes_total ?? 0);
   $("metric_no").textContent = String(summary.application_no_total ?? 0);
+  $("metric_corrected").textContent = String(summary.manually_corrected_total ?? 0);
 
   const stageCounts =
     sankeyDerivedStageCounts() ||
