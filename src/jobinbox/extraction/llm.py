@@ -83,39 +83,6 @@ Rules:
 """
 
 
-_TIMELINE_VALIDATOR_PROMPT = """
-You validate one extracted job-application JSON against prior company history.
-Return strict JSON only with keys:
-- current: object with keys:
-  - application: "yes" or "no"
-  - company: string or null
-  - role: string or null
-  - stage: one of "Received", "Online Assessment", "Interview", "Rejection", "Offer", "Unknown"
-  - interview_date: string (YYYY-MM-DD) or null
-- role_updates: array of objects
-  - each object: { "gmail_id": string, "role": string }
-
-Input format:
-- extracted: the first-pass extraction for the current email
-- history: prior finalized events for the SAME user and SAME company, ordered oldest -> newest
-
-Rules:
-- Company in `extracted` is source-of-truth for this decision. Do not rewrite company to a different value unless discarding the extracted event.
-- Your job is timeline coherence: keep useful events and discard noisy/duplicate events.
-- You may either:
-  - Keep as application="yes" with a coherent stage, or
-  - Discard as application="no" with company=null, role=null, stage="Unknown", interview_date=null
-- Non-interview repeats that do not add new timeline signal should usually be discarded.
-- Interview confirmations/reminders/reschedules for a concrete interview can be kept as stage="Interview".
-- interview_date is allowed only when stage="Interview"; otherwise null.
-- If extracted itself is not a job-application signal, discard.
-- role_updates is optional and may be empty.
-- role_updates can only target gmail_id values that appear in `history`.
-- Use role_updates only when you are confident a history row with missing/unknown role can be backfilled.
-- Never output placeholder role values like "Unknown Role", "unknown", or null in role_updates.
-- Do not include explanations, markdown, or extra fields.
-"""
-
 _COMPANY_HISTORY_CURATOR_PROMPT = """
 You curate one company's application timeline after a new application=yes extraction was stored. Information may arrive out of order.
 Role-name consistency is already handled by a deterministic canonical mapping; do NOT try to rewrite role spellings or merge role families.
@@ -173,18 +140,6 @@ def _format_email_user_message(*, subject: str, sender: str, snippet: str, body:
         "Body:\n"
         f"{body_snippet}\n"
     )
-
-
-def _format_timeline_validator_user_message(
-    *,
-    extracted: dict[str, Any],
-    history: list[dict[str, Any]],
-) -> str:
-    payload = {
-        "extracted": extracted,
-        "history": history,
-    }
-    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def _format_company_curator_user_message(
@@ -291,27 +246,6 @@ def _normalize_company_curation_payload(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_validator_payload(data: dict[str, Any]) -> dict[str, Any]:
-    current_raw = data.get("current")
-    current = _normalize_output(current_raw) if isinstance(current_raw, dict) else _normalize_output(data)
-
-    updates_raw = data.get("role_updates")
-    if not isinstance(updates_raw, list):
-        patches_raw = data.get("patches")
-        updates_raw = patches_raw if isinstance(patches_raw, list) else []
-
-    deduped_updates: dict[str, dict[str, str]] = {}
-    for item in updates_raw:
-        normalized = _normalize_role_update_entry(item)
-        if normalized:
-            deduped_updates[normalized["gmail_id"]] = normalized
-
-    return {
-        "current": current,
-        "role_updates": list(deduped_updates.values()),
-    }
-
-
 @dataclass(frozen=True)
 class OllamaEmailClassifier:
     """Small adapter around Ollama chat API with strict JSON output normalization."""
@@ -358,42 +292,6 @@ class OllamaEmailClassifier:
         parsed = _extract_json(content)
         return _normalize_output(parsed)
 
-    def validate_extraction_with_updates(
-        self,
-        *,
-        extracted: dict[str, Any],
-        history: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        user_message = _format_timeline_validator_user_message(
-            extracted=extracted,
-            history=history,
-        )
-        payload = {
-            "model": self.model,
-            "stream": False,
-            "format": "json",
-            "messages": [
-                {"role": "system", "content": _TIMELINE_VALIDATOR_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            "options": {"temperature": 0},
-        }
-        url = f"{self.base_url.rstrip('/')}/api/chat"
-        timeout = httpx.Timeout(
-            connect=30.0,
-            read=self.timeout_s,
-            write=30.0,
-            pool=30.0,
-        )
-        response = httpx.post(url, json=payload, timeout=timeout)
-        response.raise_for_status()
-        raw = response.json()
-        content = ((raw.get("message") or {}).get("content") or "").strip()
-        if not content:
-            raise ValueError("Timeline validator did not include message content.")
-        parsed = _extract_json(content)
-        return _normalize_validator_payload(parsed)
-
     def curate_company_history(
         self,
         *,
@@ -431,18 +329,6 @@ class OllamaEmailClassifier:
             raise ValueError("Company curator did not include message content.")
         parsed = _extract_json(content)
         return _normalize_company_curation_payload(parsed)
-
-    def validate_extraction(
-        self,
-        *,
-        extracted: dict[str, Any],
-        history: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        payload = self.validate_extraction_with_updates(extracted=extracted, history=history)
-        current = payload.get("current")
-        if isinstance(current, dict):
-            return current
-        return _normalize_output(extracted)
 
 
 @dataclass(frozen=True)
@@ -503,53 +389,6 @@ class OpenAIEmailClassifier:
         parsed = _extract_json(content)
         return _normalize_output(parsed)
 
-    def validate_extraction_with_updates(
-        self,
-        *,
-        extracted: dict[str, Any],
-        history: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        user_message = _format_timeline_validator_user_message(
-            extracted=extracted,
-            history=history,
-        )
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": _TIMELINE_VALIDATOR_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-        }
-        if self.use_json_response_format:
-            payload["response_format"] = {"type": "json_object"}
-
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        timeout = httpx.Timeout(
-            connect=30.0,
-            read=self.timeout_s,
-            write=30.0,
-            pool=30.0,
-        )
-        response = httpx.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        raw = response.json()
-        choice = (raw.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        content = (message.get("content") or "").strip()
-        if not content:
-            raise ValueError("Timeline validator did not include message content.")
-        parsed = _extract_json(content)
-        return _normalize_validator_payload(parsed)
-
     def curate_company_history(
         self,
         *,
@@ -598,18 +437,6 @@ class OpenAIEmailClassifier:
             raise ValueError("Company curator did not include message content.")
         parsed = _extract_json(content)
         return _normalize_company_curation_payload(parsed)
-
-    def validate_extraction(
-        self,
-        *,
-        extracted: dict[str, Any],
-        history: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        payload = self.validate_extraction_with_updates(extracted=extracted, history=history)
-        current = payload.get("current")
-        if isinstance(current, dict):
-            return current
-        return _normalize_output(extracted)
 
 
 def _extract_json(text: str) -> dict[str, Any]:
