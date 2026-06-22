@@ -67,7 +67,11 @@ def _adaptive_batch_concurrency(runtime: WebRuntime, *, requested: int | None, b
     return base
 
 
-def _is_retryable_batch_error(exc: BaseException) -> bool:
+def _is_retryable_extraction_error(exc: BaseException) -> bool:
+    if isinstance(exc, ValueError):
+        # Malformed/unparseable LLM response (e.g. no JSON object found) -- often a
+        # one-off sampling fluke that a fresh attempt resolves.
+        return True
     if isinstance(exc, httpx.TimeoutException | httpx.RequestError):
         return True
     if isinstance(exc, sqlite3.OperationalError):
@@ -86,6 +90,20 @@ def _retry_sleep_s(attempt: int) -> float:
     # Exponential backoff with jitter, capped.
     base = min(12.0, 0.7 * (2**max(0, attempt - 1)))
     return base * (0.65 + random.random() * 0.7)
+
+
+def _call_with_retry(fn, *, context: str, max_attempts: int = 4):
+    """Retry a flaky extraction/curation call (transport errors or malformed output)."""
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - retry loop needs broad coverage
+            last_exc = exc if isinstance(exc, Exception) else Exception(str(exc))
+            if attempt >= max_attempts or not _is_retryable_extraction_error(exc):
+                raise
+            time.sleep(_retry_sleep_s(attempt))
+    raise last_exc or RuntimeError(f"{context} failed after retries.")
 
 
 def _format_classification_exception(exc: BaseException) -> tuple[str, str]:
@@ -206,10 +224,13 @@ def _apply_company_curation(
             if not history:
                 return
 
-            payload = curate_history(
-                company=company,
-                trigger_gmail_id=trigger_gmail_id,
-                history=history,
+            payload = _call_with_retry(
+                lambda: curate_history(
+                    company=company,
+                    trigger_gmail_id=trigger_gmail_id,
+                    history=history,
+                ),
+                context=f"curate {company}",
             )
             if not isinstance(payload, dict):
                 return
@@ -253,11 +274,14 @@ def _classify_store_and_curate(
     body: str,
     ignore_curation_timeout: bool,
 ) -> dict[str, Any]:
-    extracted = classifier.classify_email(
-        subject=subject,
-        sender=sender,
-        snippet=snippet,
-        body=body,
+    extracted = _call_with_retry(
+        lambda: classifier.classify_email(
+            subject=subject,
+            sender=sender,
+            snippet=snippet,
+            body=body,
+        ),
+        context=f"classify {gmail_id}",
     )
 
     # Persist extractor output immediately so processed rows always exist,
@@ -498,26 +522,18 @@ def iter_batch_events(runtime: WebRuntime, payload: BatchClassifyRequest) -> Ite
 
     def classify_one(row: dict[str, object]) -> tuple[str, dict[str, object]]:
         gmail_id = str(row.get("id") or "")
-        last_exc: Exception | None = None
-        for attempt in range(1, 5):
-            try:
-                result = _classify_and_store_only(
-                    runtime,
-                    classifier=classifier,
-                    gmail_id=gmail_id,
-                    subject=str(row.get("subject") or ""),
-                    sender=str(row.get("sender") or ""),
-                    snippet=str(row.get("snippet") or ""),
-                    body=str(row.get("body") or ""),
-                )
-                return gmail_id, result
-            except Exception as exc:  # noqa: BLE001 - retry loop
-                last_exc = exc if isinstance(exc, Exception) else Exception(str(exc))
-                if attempt >= 4 or not _is_retryable_batch_error(exc):
-                    raise
-                time.sleep(_retry_sleep_s(attempt))
-        # Defensive; should be unreachable.
-        raise last_exc or RuntimeError("Batch classify failed.")
+        result = _call_with_retry(
+            lambda: _classify_and_store_only(
+                runtime,
+                classifier=classifier,
+                gmail_id=gmail_id,
+                subject=str(row.get("subject") or ""),
+                sender=str(row.get("sender") or ""),
+                snippet=str(row.get("snippet") or ""),
+                body=str(row.get("body") or ""),
+            ),
+            context=f"classify {gmail_id}",
+        )
         return gmail_id, result
 
     total = len(candidates)

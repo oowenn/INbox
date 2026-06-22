@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
 import httpx
+
+_log = logging.getLogger("jobinbox.extraction")
 
 STAGES = (
     "Received",
@@ -290,7 +293,11 @@ class OllamaEmailClassifier:
         if not content:
             raise ValueError("LLM response did not include message content.")
         parsed = _extract_json(content)
-        return normalize_classification_output(parsed)
+        normalized = normalize_classification_output(parsed)
+        coercion_warnings = _describe_coercions(parsed, normalized)
+        if coercion_warnings:
+            _log.warning("classification output required coercion: %s", "; ".join(coercion_warnings))
+        return normalized
 
     def curate_company_history(
         self,
@@ -387,7 +394,11 @@ class OpenAIEmailClassifier:
         if not content:
             raise ValueError("OpenAI response did not include message content.")
         parsed = _extract_json(content)
-        return normalize_classification_output(parsed)
+        normalized = normalize_classification_output(parsed)
+        coercion_warnings = _describe_coercions(parsed, normalized)
+        if coercion_warnings:
+            _log.warning("classification output required coercion: %s", "; ".join(coercion_warnings))
+        return normalized
 
     def curate_company_history(
         self,
@@ -531,3 +542,33 @@ def normalize_classification_output(data: dict[str, Any]) -> dict[str, Any]:
         "stage": stage,
         "interview_date": interview_date,
     }
+
+
+def _describe_coercions(raw: dict[str, Any], normalized: dict[str, Any]) -> list[str]:
+    """
+    Compare the LLM's raw parsed JSON against normalize_classification_output's
+    result and describe anything that had to be silently clamped. A lightweight
+    signal for prompt/model drift, not a correctness guarantee -- just visibility
+    into how often the model emits something outside the expected shape.
+    """
+    warnings: list[str] = []
+
+    raw_stage = str(raw.get("stage", "")).strip()
+    if raw_stage and raw_stage.lower() not in _STAGE_LOOKUP and normalized.get("stage") == "Unknown":
+        warnings.append(f"unrecognized stage {raw_stage!r} coerced to 'Unknown'")
+
+    raw_interview_date = (
+        raw.get("interview_date") or raw.get("interviewDate") or raw.get("scheduled_interview_date")
+    )
+    if (
+        raw_interview_date
+        and normalized.get("interview_date") is None
+        and normalized.get("stage") == "Interview"
+    ):
+        warnings.append(f"interview_date {raw_interview_date!r} could not be parsed and was dropped")
+
+    raw_application = str(raw.get("application", "")).strip().lower()
+    if raw_application and raw_application not in {"yes", "y", "true", "1", "no", "n", "false", "0"}:
+        warnings.append(f"unrecognized application value {raw_application!r} coerced to 'no'")
+
+    return warnings

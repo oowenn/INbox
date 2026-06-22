@@ -242,6 +242,7 @@ def build_dashboard_summary(
         unprocessed_total=int(summary.get("unprocessed_total") or 0),
         application_yes_total=int(summary.get("application_yes_total") or 0),
         application_no_total=int(summary.get("application_no_total") or 0),
+        manually_corrected_total=int(summary.get("manually_corrected_total") or 0),
         stage_counts=[
             DashboardStageCount(
                 stage=str(item.get("stage") or "Unknown"),
