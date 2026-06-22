@@ -23,6 +23,7 @@ from jobinbox.web.models import (
     FetchMessagesRequest,
     FetchMessagesResponse,
     InboxResponse,
+    MessageCorrectionRequest,
     MonthlyCountsResponse,
     CycleEstimateResponse,
     SankeyResponse,
@@ -35,6 +36,7 @@ from jobinbox.web.services import (
     build_sankey,
     classify_batch,
     classify_message,
+    correct_message_result,
     clear_results,
     fetch_messages,
     get_cycle_estimate,
@@ -179,6 +181,11 @@ def clear_results_route() -> ClearResultsResponse:
 @app.post("/api/classify", response_model=ClassificationResult)
 def classify_message_route(payload: ClassificationRequest) -> ClassificationResult:
     return classify_message(runtime, payload)
+
+
+@app.post("/api/results/correct", response_model=ClassificationResult)
+def correct_message_result_route(payload: MessageCorrectionRequest) -> ClassificationResult:
+    return correct_message_result(runtime, payload)
 
 
 @app.get("/api/classification/failures", response_model=ClassificationFailuresResponse)

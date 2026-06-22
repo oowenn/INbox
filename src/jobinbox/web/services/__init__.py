@@ -9,6 +9,7 @@ from jobinbox.web.services.analytics import (
 from jobinbox.web.services.classification import (
     classify_batch,
     classify_message,
+    correct_message_result,
     iter_batch_events,
     list_classification_failures,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "list_cached_messages",
     "classify_batch",
     "classify_message",
+    "correct_message_result",
     "iter_batch_events",
     "list_classification_failures",
     "iter_application_cycle_events",

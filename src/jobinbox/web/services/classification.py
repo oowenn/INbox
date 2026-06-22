@@ -12,6 +12,7 @@ from typing import Any, Iterator
 import httpx
 from fastapi import HTTPException
 
+from jobinbox.extraction.llm import normalize_classification_output
 from jobinbox.extraction.prefilter import rule_skip_reason
 from jobinbox.web.models import (
     BatchClassifyRequest,
@@ -20,6 +21,7 @@ from jobinbox.web.models import (
     ClassificationFailuresResponse,
     ClassificationRequest,
     ClassificationResult,
+    MessageCorrectionRequest,
 )
 from jobinbox.web.runtime import WebRuntime
 
@@ -410,6 +412,39 @@ def classify_message(runtime: WebRuntime, payload: ClassificationRequest) -> Cla
     except ValueError as exc:
         _record_classification_failure(runtime, gmail_id, exc, context="classify_single")
         raise HTTPException(status_code=502, detail=f"Invalid LLM response: {exc}") from exc
+
+
+def correct_message_result(runtime: WebRuntime, payload: MessageCorrectionRequest) -> ClassificationResult:
+    """
+    Overwrite one already-classified email's result with a human correction.
+
+    Runs the submitted fields through the same normalize_classification_output the
+    LLM path itself uses, so a correction gets the identical invariants (stage/
+    interview_date coupling, application=no nulling) as any automatic classification.
+    """
+    gmail_id = payload.gmail_id.strip()
+    if not gmail_id:
+        raise HTTPException(status_code=400, detail="gmail_id is required.")
+
+    normalized = normalize_classification_output(payload.model_dump())
+    applied = runtime.store.apply_manual_correction(
+        user_id=runtime.settings.user_id,
+        gmail_id=gmail_id,
+        result=normalized,
+    )
+    if not applied:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existing classification found for gmail_id={gmail_id!r} to correct.",
+        )
+
+    stored = runtime.store.get_result_for_user_message(
+        user_id=runtime.settings.user_id,
+        gmail_id=gmail_id,
+    )
+    if not stored:
+        raise HTTPException(status_code=404, detail=f"gmail_id={gmail_id!r} not found after correction.")
+    return ClassificationResult(**stored)
 
 
 def iter_batch_events(runtime: WebRuntime, payload: BatchClassifyRequest) -> Iterator[dict[str, Any]]:

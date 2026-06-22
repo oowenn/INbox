@@ -290,7 +290,7 @@ class OllamaEmailClassifier:
         if not content:
             raise ValueError("LLM response did not include message content.")
         parsed = _extract_json(content)
-        return _normalize_output(parsed)
+        return normalize_classification_output(parsed)
 
     def curate_company_history(
         self,
@@ -387,7 +387,7 @@ class OpenAIEmailClassifier:
         if not content:
             raise ValueError("OpenAI response did not include message content.")
         parsed = _extract_json(content)
-        return _normalize_output(parsed)
+        return normalize_classification_output(parsed)
 
     def curate_company_history(
         self,
@@ -489,7 +489,7 @@ def _normalize_interview_date(value: Any) -> str | None:
     return None
 
 
-def _normalize_output(data: dict[str, Any]) -> dict[str, Any]:
+def normalize_classification_output(data: dict[str, Any]) -> dict[str, Any]:
     app_raw = str(data.get("application", "no")).strip().lower()
     application = "yes" if app_raw in {"yes", "y", "true", "1"} else "no"
 

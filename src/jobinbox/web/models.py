@@ -11,6 +11,7 @@ class ClassificationResult(BaseModel):
     role: str | None = None
     stage: str
     interview_date: str | None = None
+    manually_corrected_at: str | None = None
 
 
 class InboxMessage(BaseModel):
@@ -92,6 +93,15 @@ class ClassificationRequest(BaseModel):
     sender: str = ""
     snippet: str = ""
     body: str = ""
+
+
+class MessageCorrectionRequest(BaseModel):
+    gmail_id: str
+    application: str = Field(pattern="^(yes|no)$")
+    company: str | None = None
+    role: str | None = None
+    stage: str = "Unknown"
+    interview_date: str | None = None
 
 
 class BatchClassifyRequest(BaseModel):
@@ -232,5 +242,5 @@ class SankeyResponse(BaseModel):
     links: list[SankeyLink]
     branch_pairs: dict[str, list[SankeyCompanyRolePair]]
     total_pairs: int = Field(
-        description="Count of companies included in the Sankey (Received gate is per company; role field in pairs lists title variants).",
+        description="Count of distinct (company, role) applications included in the Sankey.",
     )

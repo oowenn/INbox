@@ -1,6 +1,8 @@
 import {
+  correctMessageResult,
   getCycleEstimate,
   getDashboardSummary,
+  getMessages,
   getMonthlyCounts,
   getSankey,
   invalidateCycleGmailCount,
@@ -11,6 +13,8 @@ import {
 import { renderSankeyChart } from "./sankey.js";
 
 const MIN_CYCLE_YEAR = 2000;
+const STAGES = ["Received", "Online Assessment", "Interview", "Rejection", "Offer", "Unknown"];
+const MESSAGES_PAGE_SIZE = 100;
 
 function currentCycleStartYear() {
   const now = new Date();
@@ -34,6 +38,12 @@ const state = {
   selectedBranchId: "",
   selectedBranchPairs: [],
   branchSearchTerm: "",
+  messages: [],
+  messagesLimit: MESSAGES_PAGE_SIZE,
+  messagesFilter: "all",
+  messagesSearchTerm: "",
+  editingGmailId: "",
+  messagesSaving: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -986,6 +996,156 @@ async function handleCycleAnalyze() {
   }
 }
 
+function filteredMessages() {
+  const query = state.messagesSearchTerm.trim().toLowerCase();
+  return state.messages.filter((message) => {
+    const application = message.result?.application;
+    if (state.messagesFilter === "yes" && application !== "yes") return false;
+    if (state.messagesFilter === "no" && application !== "no") return false;
+    if (!query) return true;
+    const haystack = [
+      message.subject,
+      message.sender,
+      message.result?.company,
+      message.result?.role,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function stageOptionsHtml(selectedStage) {
+  return STAGES.map(
+    (stage) =>
+      `<option value="${escapeHtml(stage)}" ${stage === selectedStage ? "selected" : ""}>${escapeHtml(stage)}</option>`
+  ).join("");
+}
+
+function renderMessageEditRow(message) {
+  const result = message.result || { application: "no", company: "", role: "", stage: "Unknown", interview_date: "" };
+  const stage = STAGES.includes(result.stage) ? result.stage : "Unknown";
+  return (
+    `<tr data-gmail-id="${escapeHtml(message.id)}" class="message-edit-row">` +
+    `<td colspan="8" class="message-edit-cell">` +
+    `<div class="message-edit-form">` +
+    `<label>Application` +
+    `<select data-field="application">` +
+    `<option value="yes" ${result.application === "yes" ? "selected" : ""}>Yes</option>` +
+    `<option value="no" ${result.application !== "yes" ? "selected" : ""}>No</option>` +
+    `</select></label>` +
+    `<label>Company<input data-field="company" type="text" value="${escapeHtml(result.company || "")}" /></label>` +
+    `<label>Role<input data-field="role" type="text" value="${escapeHtml(result.role || "")}" /></label>` +
+    `<label>Stage<select data-field="stage">${stageOptionsHtml(stage)}</select></label>` +
+    `<label data-interview-date-field ${stage === "Interview" ? "" : "hidden"}>Interview date` +
+    `<input data-field="interview_date" type="date" value="${escapeHtml(result.interview_date || "")}" /></label>` +
+    `<button type="button" data-action="save" data-gmail-id="${escapeHtml(message.id)}">Save</button>` +
+    `<button type="button" data-action="cancel" data-gmail-id="${escapeHtml(message.id)}">Cancel</button>` +
+    `</div></td></tr>`
+  );
+}
+
+function renderMessageRow(message) {
+  if (state.editingGmailId === message.id) {
+    return renderMessageEditRow(message);
+  }
+  const result = message.result;
+  const corrected = result?.manually_corrected_at
+    ? '<span class="message-corrected-badge">Corrected</span>'
+    : "";
+  const application = result ? (result.application === "yes" ? "Yes" : "No") : "Not analyzed";
+  const company = result?.company || "-";
+  const role = result?.role || "-";
+  const stage = result?.stage || "-";
+  const editBtn = result
+    ? `<button type="button" data-action="edit" data-gmail-id="${escapeHtml(message.id)}">Edit</button>`
+    : "";
+  return (
+    `<tr data-gmail-id="${escapeHtml(message.id)}">` +
+    `<td>${escapeHtml(formatMessageDate(message))}</td>` +
+    `<td>${escapeHtml(message.sender || "")}</td>` +
+    `<td>${escapeHtml(message.subject || "")}</td>` +
+    `<td>${escapeHtml(application)}${corrected}</td>` +
+    `<td>${escapeHtml(company)}</td>` +
+    `<td>${escapeHtml(role)}</td>` +
+    `<td>${escapeHtml(stage)}</td>` +
+    `<td>${editBtn}</td>` +
+    `</tr>`
+  );
+}
+
+function renderMessagesList() {
+  const tbody = $("messages_body");
+  const status = $("messages_status");
+  if (!tbody) return;
+
+  const visible = filteredMessages();
+  if (status) {
+    status.textContent = `Showing ${visible.length} of ${state.messages.length} loaded messages.`;
+  }
+
+  if (!visible.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="table-empty">No messages match this filter.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = visible.map(renderMessageRow).join("");
+}
+
+async function loadMessages() {
+  const status = $("messages_status");
+  if (status) status.textContent = "Loading...";
+  try {
+    const payload = await getMessages({ limit: state.messagesLimit });
+    state.messages = Array.isArray(payload?.messages) ? payload.messages : [];
+    renderMessagesList();
+  } catch (err) {
+    if (status) status.textContent = err.message || String(err);
+  }
+}
+
+function startEditingMessage(gmailId) {
+  state.editingGmailId = gmailId;
+  renderMessagesList();
+}
+
+function cancelEditingMessage() {
+  state.editingGmailId = "";
+  renderMessagesList();
+}
+
+async function saveMessageCorrection(gmailId) {
+  if (state.messagesSaving) return;
+  const row = document.querySelector(`tr.message-edit-row[data-gmail-id="${gmailId}"]`);
+  if (!row) return;
+
+  const field = (name) => row.querySelector(`[data-field="${name}"]`)?.value ?? "";
+  const application = field("application");
+  const stage = field("stage");
+  const interviewDate = stage === "Interview" ? field("interview_date") : "";
+
+  state.messagesSaving = true;
+  try {
+    await correctMessageResult({
+      gmailId,
+      application,
+      company: field("company").trim(),
+      role: field("role").trim(),
+      stage,
+      interviewDate,
+    });
+    state.editingGmailId = "";
+    await loadMessages();
+    await refreshDashboard({ keepStatus: true });
+    setStatus("Correction saved.");
+  } catch (err) {
+    setStatus(err.message || String(err), { error: true });
+  } finally {
+    state.messagesSaving = false;
+  }
+}
+
 function wireEvents() {
   const onClick = (id, handler) => {
     const el = $(id);
@@ -1029,6 +1189,41 @@ function wireEvents() {
   });
 
   onClick("timeline_toggle_btn", () => void toggleTimeline());
+
+  const filterSelect = $("messages_filter_select");
+  if (filterSelect) {
+    filterSelect.addEventListener("change", () => {
+      state.messagesFilter = filterSelect.value || "all";
+      renderMessagesList();
+    });
+  }
+  onInput("messages_search_input", (event) => {
+    state.messagesSearchTerm = String(event.target?.value || "");
+    renderMessagesList();
+  });
+  onClick("messages_load_more_btn", () => {
+    state.messagesLimit += MESSAGES_PAGE_SIZE;
+    void loadMessages();
+  });
+
+  const messagesBody = $("messages_body");
+  if (messagesBody) {
+    messagesBody.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-action]");
+      if (!target) return;
+      const gmailId = target.dataset.gmailId || "";
+      if (!gmailId) return;
+      if (target.dataset.action === "edit") startEditingMessage(gmailId);
+      if (target.dataset.action === "cancel") cancelEditingMessage();
+      if (target.dataset.action === "save") void saveMessageCorrection(gmailId);
+    });
+    messagesBody.addEventListener("change", (event) => {
+      if (event.target?.dataset?.field !== "stage") return;
+      const row = event.target.closest("tr");
+      const field = row?.querySelector("[data-interview-date-field]");
+      if (field) field.hidden = event.target.value !== "Interview";
+    });
+  }
 }
 
 async function init() {
@@ -1038,6 +1233,7 @@ async function init() {
   setControlsBusy();
   await refreshDashboard();
   await refreshCycleEstimate();
+  await loadMessages();
   setControlsBusy();
 }
 

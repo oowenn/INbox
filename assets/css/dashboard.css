@@ -670,6 +670,76 @@ button.subtle-danger {
   overflow: auto;
 }
 
+.messages-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  margin-bottom: 0.55rem;
+}
+
+.messages-filter,
+.messages-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.messages-table-wrap {
+  max-height: 420px;
+}
+
+.messages-table td {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.messages-table td.message-edit-cell {
+  white-space: normal;
+  max-width: none;
+}
+
+.messages-actions {
+  margin-top: 0.55rem;
+}
+
+.message-corrected-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: #e3f3e6;
+  color: #2b7a3d;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.message-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: flex-end;
+  padding: 0.35rem 0;
+}
+
+.message-edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.message-edit-form input,
+.message-edit-form select {
+  min-width: 8rem;
+}
+
 @media (max-width: 960px) {
   .detail-grid {
     grid-template-columns: 1fr;
